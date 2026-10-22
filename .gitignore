@@ -6,3 +6,4 @@
 include/secrets.h
 include/credentials.h
 settings.toml
+secrets.py
