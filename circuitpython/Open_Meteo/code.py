@@ -1,0 +1,674 @@
+import board
+import time
+import os
+import rtc
+import ssl
+import wifi
+import socketpool
+import adafruit_requests
+from adafruit_datetime import datetime, date
+import gc
+import supervisor
+import random
+import digitalio
+from tm1637_display import TM1637Display
+import neopixel
+from adafruit_io.adafruit_io import IO_HTTP, AdafruitIO_RequestError
+from jpcolors import Color
+import microcontroller
+
+# Configuration Constants
+UPDATE_INTERVAL = 300  # seconds between weather updates
+PAST_DATA_INTERVAL = 24  # update cycles before refreshing past data
+LED_BRIGHTNESS = 0.1
+FORECAST_DAYS_PAST = 7
+FORECAST_DAYS_FUTURE = 1
+API_RETRY_DELAY = 2  # seconds
+API_MAX_RETRIES = 3
+AIO_SEND_DELAY = 2  # seconds between Adafruit IO sends (rate limiting - increased to avoid throttling)
+TIMEZONE_OFFSET_HOURS = 5  # Adjust for your timezone (5 for EST, 6 for CST, etc.)
+
+# Wind direction lookup table
+WIND_DIRS = ["North", "NNE", "NE", "ENE", "East", "ESE", "SE", "SSE",
+             "South", "SSW", "SW", "WSW", "West", "WNW", "NW", "NNW"]
+
+
+def safe_api_call(func, max_retries=API_MAX_RETRIES, delay=API_RETRY_DELAY):
+    """Safely call a function with retry logic instead of reloading."""
+    for attempt in range(max_retries):
+        try:
+            return func()
+        except Exception as e:
+            print(f"Attempt {attempt+1} failed: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(delay)
+            else:
+                print("Max retries reached. Reloading...")
+                time.sleep(15)
+                supervisor.reload()
+
+
+def getlast():
+    def _getlast():
+        io = IO_HTTP(aio_username, aio_key, requests)
+        CurData = io.get_feed('om-current')
+        received_data = io.receive_data(CurData["key"])
+        print(received_data['value'])
+        return received_data['value']
+    
+    return safe_api_call(_getlast)
+
+def m(i):
+
+    # Get the total allocated memory
+    total_allocated = gc.mem_alloc()
+
+    # Get the total free memory
+    total_free = gc.mem_free()
+    before = total_free
+    # Print the memory usage
+    #print("*"*41)
+    #print("Total allocated memory: {} bytes".format(total_allocated))
+    #print("Total free memory: {} bytes".format(total_free))
+    #print("Total memory: {} bytes".format(total_allocated + total_free))
+    gc.collect()
+    print("\n>>> ", i, before, gc.mem_free())
+    #print("\n")
+
+def set_td():
+    def _set_td():
+        current_time = io.receive_time(timezone=tz)
+        return f"{current_time.tm_year}-{current_time.tm_mon}-{current_time.tm_mday}"
+    
+    return safe_api_call(_set_td)
+
+def set_td14():
+    def _set_td14():
+        current_time = io.receive_time(timezone=tz)
+        timestamp = time.mktime(current_time) + (24 * 14 * 60 * 60)
+        ft = time.localtime(timestamp)
+        return f"{ft.tm_year}-{ft.tm_mon}-{ft.tm_mday}"
+    
+    return safe_api_call(_set_td14)     
+
+def windir(wd):
+    """Convert wind degrees to cardinal direction using lookup table."""
+    index = int((wd + 11.25) / 22.5) % 16
+    return WIND_DIRS[index]
+
+def convert_to_struct_time(datetime_str):
+    # Parse the date-time string
+    year, month, day = map(int, datetime_str[:10].split('-'))
+    hour, minute = map(int, datetime_str[11:16].split(':'))
+
+    # Create struct_time
+    dt = time.struct_time((year, month, day, hour, minute, 0, -1, -1, -1))
+    
+    return dt
+
+
+def unix_to_formatted_time(unix_time):
+    # Convert Unix timestamp to struct_time
+    t = time.localtime(unix_time)
+    
+    # Extract hour, minute, and day components
+    hour = t.tm_hour
+    minute = t.tm_min
+    day = t.tm_mday
+    month = t.tm_mon
+    year = t.tm_year
+    
+    # Determine AM/PM and adjust the hour for 12-hour format
+    period = "am" if hour < 12 else "pm"
+    hour = hour % 12 if hour % 12 != 0 else 12  # Convert 0 to 12 for 12-hour clock
+    
+    # Format the time string
+    formatted_time = f"{hour}:{minute:02d}{period} on {month}/{day}/{year}"
+    return formatted_time
+
+# Example usage:
+#unix_time = 1739046900  # Replace with any Unix timestamp
+#print(unix_to_formatted_time(unix_time))
+        
+    
+wc = {0 : 'Clear sky',
+            1 : 'Mainly clear',
+            2 : 'Partly cloudy',
+            3 : 'Overcast',
+            45 : 'Fog',
+            48 : 'Depositing rime fog',
+            51 : 'Light drizzle',
+            53 : 'Moderate drizzle',
+            55 : 'Dense drizzle',
+            56 : 'Light freezing drizzle',
+            57 : 'Dense freezing drizzle',
+            61 : 'Slight rain',
+            62 : 'Moderate rain',
+            63 : 'Rain',
+            65 : 'Heavy rain',
+            66 : 'Light freezing rain',
+            67 : 'Heavy freezing rain',
+            71 : 'Slight snowfall',
+            73 : 'Moderate snowfall',
+            75 : 'Heavy snowfall',
+            77 : 'Snow grains',
+            80 : 'Slight rain showers',
+            81 : 'Moderate rain showers',
+            82 : 'Violent rain showers',
+            85 : 'Slight snow showers',
+            86 : 'Heavy snow showers',
+            95 : 'Thunderstorms - slight or moderate',
+            96 : 'Thunderstorms with slight hail',
+            113 : 'Clear', 
+            116 : 'Partly cloudy', 
+            119 : 'Cloudy', 
+            122 : 'Overcast', 
+            143 : 'Mist', 
+            176 : 'Patchy rain possible', 
+            179 : 'Patchy snow possible', 
+            182 : 'Patchy sleet possible', 
+            185 : 'Patchy freezing drizzle possible', 
+            200 : 'Thundery outbreaks possible', 
+            227 : 'Blowing snow', 
+            230 : 'Blizzard', 
+            248 : 'Fog', 
+            260 : 'Freezing fog', 
+            263 : 'Patchy light drizzle', 
+            266 : 'Light drizzle', 
+            281 : 'Freezing drizzle', 
+            284 : 'Heavy freezing drizzle', 
+            293 : 'Patchy light rain', 
+            296 : 'Light rain', 
+            299 : 'Moderate rain at times', 
+            302 : 'Moderate rain', 
+            305 : 'Heavy rain at times', 
+            308 : 'Heavy rain', 
+            311 : 'Light freezing rain'
+}
+#time.sleep(300)
+m(1)
+print("starting")
+dgts = TM1637Display(board.SCL, board.SDA)
+dgts.print("0123")
+np = neopixel.NeoPixel(board.NEOPIXEL, 1)
+np.brightness = LED_BRIGHTNESS
+np[0] = Color.red
+m(2)
+#pixel_pin = board.NEOPIXEL
+#num_pixels = 32
+#pixels =  neopixel.NeoPixel(pixel_pin, num_pixels, brightness=0.5, auto_write=False)
+m(3)
+try:
+    pool = socketpool.SocketPool(wifi.radio)
+    https = ssl.create_default_context()
+    #print(f"Connecting to {os.getenv('CIRCUITPY_WIFI_SSID')}")
+    wifi.radio.connect(
+        os.getenv("CIRCUITPY_WIFI_SSID"), os.getenv("CIRCUITPY_WIFI_PASSWORD")
+    )
+    print(f"Connected to {os.getenv('CIRCUITPY_WIFI_SSID')}")
+    print(f"My IP address: {wifi.radio.ipv4_address}")
+except Exception as e:
+    print("Error connecting to wifi: ", e)
+    time.sleep(15)
+    supervisor.reload()
+np[0] = Color.green
+m(4)
+aio_username = os.getenv('AIO_USERNAME')
+aio_key = os.getenv('AIO_KEY')
+tz = os.getenv('TIMEZONE')
+lat = os.getenv('LATITUDE')
+lon = os.getenv('LONGITUDE')
+m(5)
+requests = adafruit_requests.Session(pool, ssl.create_default_context())
+m(6)
+io = IO_HTTP(aio_username, aio_key, requests)
+m(7)
+
+# Set the RTC from Adafruit IO time server
+print("Setting RTC from Adafruit IO...")
+try:
+    current_time = io.receive_time(timezone=tz)
+    rtc.RTC().datetime = current_time
+    print(f"RTC set to: {current_time}")
+except Exception as e:
+    print(f"Warning: Could not set RTC: {e}")
+    print("Continuing with existing RTC time...")
+
+before = FORECAST_DAYS_PAST
+after = FORECAST_DAYS_FUTURE
+periods = before + after
+# Read past counter from NVM (persistent across reboots)
+past = microcontroller.nvm[0] if microcontroller.nvm[0] < 255 else 0
+print("Past counter from NVM: " + str(past))
+
+# Cache feed objects outside the main loop to avoid repeated API calls
+print("Caching feed objects...")
+try:
+    FEEDS = {
+        'cur_totprec': io.get_feed('om-totprec'),
+        'cur_rain': io.get_feed('om-rain'),
+        'cur_show': io.get_feed('om-showers'),
+        'cur_snow': io.get_feed('om-snow'),
+        'cur_wind': io.get_feed('om-winds'),
+        'cur_windspeed': io.get_feed('om-windspeed'),
+        'cur_windgust': io.get_feed('om-windgust'),
+        'cur_rh': io.get_feed('om-hum'),
+        'cur_clouds': io.get_feed('om-clouds'),
+        'cur_data': io.get_feed('om-current'),
+        'cur_temp': io.get_feed('om-temp'),
+        'cur_when': io.get_feed('om-when'),
+        'cur_desc': io.get_feed('om-desc'),
+        'cur_fl': io.get_feed('om-fl'),
+        'cur_baro': io.get_feed('om-pres'),
+        'baro_trend': io.get_feed('om-pres-trend'),
+        'rt': io.get_feed("rt"),
+        'past_data': io.get_feed('om-past'),
+        'past_prec': io.get_feed('omp-totprec'),
+        'past_rain': io.get_feed('omp-rain'),
+        'past_show': io.get_feed('omp-showers'),
+        'past_snow': io.get_feed('omp-snow'),
+        'past_maxtemp': io.get_feed('omp-maxtemp'),
+        'past_mintemp': io.get_feed('omp-mintemp'),
+        'past_daylight': io.get_feed('omp-daylighthours'),
+        'past_sunlight': io.get_feed('omp-sunshinehrs'),
+    }
+    print("Feed cache complete!")
+except Exception as e:
+    print(f"Error caching feeds: {e}")
+    time.sleep(15)
+    supervisor.reload()
+while True:
+    # Print current time from RTC at start of loop
+    current_rtc_time = time.localtime()
+    print("\n" + "="*60)
+    # Format time components with zero padding
+    year = str(current_rtc_time.tm_year)
+    mon = str(current_rtc_time.tm_mon) if current_rtc_time.tm_mon >= 10 else "0" + str(current_rtc_time.tm_mon)
+    day = str(current_rtc_time.tm_mday) if current_rtc_time.tm_mday >= 10 else "0" + str(current_rtc_time.tm_mday)
+    hour = str(current_rtc_time.tm_hour) if current_rtc_time.tm_hour >= 10 else "0" + str(current_rtc_time.tm_hour)
+    minute = str(current_rtc_time.tm_min) if current_rtc_time.tm_min >= 10 else "0" + str(current_rtc_time.tm_min)
+    sec = str(current_rtc_time.tm_sec) if current_rtc_time.tm_sec >= 10 else "0" + str(current_rtc_time.tm_sec)
+    time_str = year + "-" + mon + "-" + day + " " + hour + ":" + minute + ":" + sec
+    print("Loop started at: " + time_str)
+    print("="*60 + "\n")
+    
+    np.brightness = LED_BRIGHTNESS
+    np[0] = Color.amber
+    m(8)
+    jwu_base = "http://api.open-meteo.com/v1/forecast?"
+    jwu_loc = f"latitude={lat}&longitude={lon}&timezone={tz}"
+    jwu_units = "&temperature_unit=fahrenheit&wind_speed_unit=mph&precipitation_unit=inch"
+    jwu_front = jwu_base + jwu_loc + jwu_units
+    jwu_current = "&current=temperature_2m,relative_humidity_2m,apparent_temperature,is_day,precipitation,rain,showers,snowfall,weather_code,cloud_cover,pressure_msl,wind_speed_10m,wind_direction_10m,wind_gusts_10m"
+    jwu_days = f"&past_days={before}&forecast_days={after}"
+    jwu_daily = "&daily=weather_code,temperature_2m_max,temperature_2m_min,apparent_temperature_max,apparent_temperature_min,sunrise,sunset,daylight_duration,sunshine_duration,precipitation_sum,rain_sum,showers_sum,snowfall_sum,precipitation_hours,precipitation_probability_max,wind_gusts_10m_max,wind_direction_10m_dominant"
+    jwu = jwu_front + jwu_daily + jwu_days + jwu_current
+    print(jwu)
+    #time.sleep(3)
+    #print("proceed")
+    m(9)
+    # Fetch weather data with retry logic
+    no_error = 0
+    response = None
+    
+    while no_error == 0:
+        try:
+            response = requests.get(jwu)
+            no_error = 1
+            print("Weather data fetched successfully")
+        except OSError as e:
+            print(f"Error fetching - try again: {e}")
+            time.sleep(API_RETRY_DELAY)
+            continue
+    
+    # Parse JSON once and cache the result
+    m(10)
+    
+    try:
+        data = response.json()
+        current_units = data['current_units']
+        current = data['current']
+        
+        # Cache units
+        cu_time = current_units['time']
+        cu_temp = current_units['temperature_2m']
+        cu_rh = current_units['relative_humidity_2m']
+        cu_feelsLike = current_units['apparent_temperature']
+        cu_precip = current_units['precipitation']
+        cu_rain = current_units['rain']
+        cu_showers = current_units['showers']
+        cu_snow = current_units['snowfall']
+        cu_clouds = current_units['cloud_cover']
+        cu_baro = current_units['pressure_msl']
+        cu_windspeed = current_units['wind_speed_10m']
+        cu_winddir = current_units['wind_direction_10m']
+        cu_windgust = current_units['wind_gusts_10m']
+        
+        m(11)
+        # Parse current values
+        c_time = current['time']
+        print(c_time)
+        c_utime = convert_to_struct_time(c_time)
+        c_uxtime = time.mktime(c_utime)
+        # Apply timezone offset (configured at top of file)
+        c_auxtime = c_uxtime + 3600 * TIMEZONE_OFFSET_HOURS
+        c_mtime = time.localtime(c_auxtime)
+        c_atime = f"{c_mtime.tm_year}-{c_mtime.tm_mon}-{c_mtime.tm_mday}T{c_mtime.tm_hour}:{c_mtime.tm_min}"
+        print(c_atime, c_mtime, c_utime, c_uxtime, "")
+        
+        c_temp = current['temperature_2m']
+        c_rh = current['relative_humidity_2m']
+        c_feelsLike = current['apparent_temperature']
+        c_precip = current['precipitation']
+        c_day = current['is_day']
+        isday = "Daytime" if c_day == 1 else "Nighttime"
+        c_rain = current['rain']
+        c_showers = current['showers']
+        c_snow = current['snowfall']
+        c_wc = current['weather_code']
+        c_wcvalue = wc[c_wc]
+        c_clouds = current['cloud_cover']
+        c_baro = current['pressure_msl']
+        c_windspeed = current['wind_speed_10m']
+        c_winddir = current['wind_direction_10m']
+        c_winddirord = windir(c_winddir)
+        c_windgust = current['wind_gusts_10m']
+    except Exception as e:
+        print(f"Error parsing JSON: {e}")
+        if response:
+            response.close()
+        time.sleep(15)
+        supervisor.reload()
+    m(12)
+    # Build output strings using modern formatting
+    if c_precip < .01:
+        precip_text = "No precipitation"
+    else:
+        precip_text = f"Total Precip {c_precip}{cu_precip}s Rain: {c_rain}{cu_rain}s Showers: {c_showers}{cu_showers}s Snow: {c_snow}{cu_snow}s."
+    
+    c_outfull = [
+        f"At {c_time}", isday, f" it is {c_wcvalue}", 
+        f" Temp {c_temp}{cu_temp}", f"Humidity {c_rh}{cu_rh}", 
+        f" Feels Like {c_feelsLike}{cu_feelsLike}", 
+        precip_text, f" Clouds {c_clouds}{cu_clouds}", 
+        f"Barometer {c_baro} {cu_baro}", 
+        f"Wind Speed {c_windspeed}{cu_windspeed}", f"from the {c_winddirord}", 
+        f"gusting {c_windgust}{cu_windgust}"
+    ]
+    print(c_outfull)  
+    xf = ", ".join(c_outfull)
+    print(f"## {len(c_outfull)}")
+    print(xf)
+    print("sending current")
+    m(30)
+    try:
+        # Get barometer history for trend calculation
+        BaroHist = io.receive_n_data(FEEDS['cur_baro']['key'], 5)
+
+        # Calculate barometer trend with safety check
+        if BaroHist and len(BaroHist) > 0:
+            BaroHistVals = [float(data["value"]) for data in BaroHist]
+            BaroHistAvg = sum(BaroHistVals) / len(BaroHistVals)
+            if BaroHistAvg < c_baro:
+                ptrend = "Rising"
+            elif BaroHistAvg > c_baro:
+                ptrend = "Falling"
+            else:
+                ptrend = "Steady"
+        else:
+            BaroHistVals = []
+            BaroHistAvg = c_baro
+            ptrend = "Unknown"
+            
+    except Exception as e:
+        print(f"Error getting barometer history: {e}")
+        BaroHistVals = []
+        BaroHistAvg = c_baro
+        ptrend = "Unknown"
+        
+    print("="*60)
+    print(BaroHistVals, "", BaroHistAvg, ptrend)
+    print("="*60)
+    
+    # Clean up current weather response now that we've extracted all data
+    if 'response' in locals() and response:
+        response.close()
+        del response
+    if 'data' in locals():
+        del data
+    if 'current' in locals():
+        del current
+    if 'current_units' in locals():
+        del current_units
+    gc.collect()
+    
+    winds = f"Winds: {c_windspeed}{cu_windspeed} from the {c_winddirord} gusting {c_windgust}"
+
+    metadata = {"lat": os.getenv('LATITUDE'), "lon": os.getenv('LONGITUDE'), "created_at": c_atime}
+    try:
+        m(100)
+        # Send current weather data using cached feeds (with delays to avoid throttling)
+        io.send_data(FEEDS['cur_when']['key'], c_time, metadata)
+        time.sleep(AIO_SEND_DELAY)
+        m(101)
+        io.send_data(FEEDS['cur_wind']['key'], winds)
+        time.sleep(AIO_SEND_DELAY)
+        m(102)
+        io.send_data(FEEDS['cur_windspeed']['key'], c_windspeed, metadata)
+        time.sleep(AIO_SEND_DELAY)
+        io.send_data(FEEDS['cur_windgust']['key'], c_windgust, metadata)
+        time.sleep(AIO_SEND_DELAY)
+        io.send_data(FEEDS['cur_totprec']['key'], c_precip, metadata)
+        time.sleep(AIO_SEND_DELAY)
+        io.send_data(FEEDS['cur_rain']['key'], c_rain, metadata)
+        time.sleep(AIO_SEND_DELAY)
+        io.send_data(FEEDS['cur_show']['key'], c_showers, metadata)
+        time.sleep(AIO_SEND_DELAY)
+        io.send_data(FEEDS['cur_snow']['key'], c_snow, metadata)
+        time.sleep(AIO_SEND_DELAY)
+        io.send_data(FEEDS['cur_rh']['key'], c_rh, metadata)
+        time.sleep(AIO_SEND_DELAY)
+        io.send_data(FEEDS['cur_clouds']['key'], c_clouds, metadata)
+        time.sleep(AIO_SEND_DELAY)
+        io.send_data(FEEDS['cur_data']['key'], xf, metadata)
+        time.sleep(AIO_SEND_DELAY)
+        io.send_data(FEEDS['cur_temp']['key'], c_temp, metadata)
+        dgts.print(c_temp)
+        time.sleep(AIO_SEND_DELAY)
+        io.send_data(FEEDS['cur_fl']['key'], c_feelsLike, metadata)
+        time.sleep(AIO_SEND_DELAY)
+        io.send_data(FEEDS['cur_baro']['key'], c_baro, metadata)
+        time.sleep(AIO_SEND_DELAY)
+        io.send_data(FEEDS['baro_trend']['key'], ptrend, metadata)
+        time.sleep(AIO_SEND_DELAY)
+        io.send_data(FEEDS['cur_desc']['key'], c_wcvalue, metadata)
+    except Exception as e:
+        print(f"Failed to send data: {e}")
+        time.sleep(5)
+    
+    time.sleep(AIO_SEND_DELAY)  # Extra delay before RT update
+    try:
+        io.send_data(FEEDS['rt']['key'], "OM Current Updated")
+        print("Current Sent")
+    except Exception as e:
+        print(f"Failed to send RT: {e}")
+
+    #get past days - only run every PAST_DATA_INTERVAL cycles
+    print(f"\n\nPast: {past}\n")
+    if past == PAST_DATA_INTERVAL:
+        past = 0
+        microcontroller.nvm[0] = 0
+    
+    if past == 0:
+        np[0] = Color.magenta
+        
+        # Fetch fresh data for past analysis
+        response = requests.get(jwu)
+        past_data = response.json()
+        daily = past_data['daily']
+        
+        for i in range(periods-after):
+            m(60+1)
+            p_name = f'ompast.{before - i - 1}'
+            print(p_name)
+            np[0] = Color.white
+            time.sleep(1)
+            
+            # Initialize p_time early so it's available for metadata
+            p_time = None
+            
+            try:
+                # Cache daily data access
+                p_time = daily['time'][i]
+                p_wc = daily['weather_code'][i]
+                p_wctxt = wc[p_wc]
+                p_tempmax = daily['temperature_2m_max'][i]
+                p_tempmin = daily['temperature_2m_min'][i]
+                p_flmax = daily['apparent_temperature_max'][i]
+                p_flmin = daily['apparent_temperature_min'][i]
+                p_daylightsec = daily['daylight_duration'][i]
+                p_daylighthrs = int(p_daylightsec / 3600 * 10) / 10
+                p_sunshinesec = daily['sunshine_duration'][i]
+                p_sunshinehrs = int(p_sunshinesec / 3600 * 10) / 10
+                p_pct_ss = int((p_sunshinesec / p_daylightsec) * 100) if p_daylightsec > 0 else 0
+                p_precip = daily['precipitation_sum'][i]
+                p_rain = daily['rain_sum'][i]
+                p_showers = daily['showers_sum'][i]
+                p_snow = daily['snowfall_sum'][i]
+                p_preciphrs = daily['precipitation_hours'][i]
+                p_windgust = daily['wind_gusts_10m_max'][i]
+                p_winddird = daily['wind_direction_10m_dominant'][i]
+                p_winddir = windir(p_winddird)
+
+                # Build summary string
+                if p_precip == 0:
+                    precip_str = "There was no precipitation recorded. "
+                else:
+                    precip_str = "Precipitation totalled " + str(p_precip) + " " + cu_rain + "s of which was " + str(p_rain) + " " + cu_rain + "s rain, " + str(p_showers) + " " + cu_rain + "s showers and " + str(p_snow) + " " + cu_rain + "s snow. "
+                
+                xf = "For " + p_time + " - " + p_wctxt + " with high of " + str(p_tempmax) + cu_temp + " and low of " + str(p_tempmin) + cu_temp + " "
+                xf = xf + "feeling like a high of " + str(p_flmax) + cu_temp + " and a low of " + str(p_flmin) + cu_temp + ". "
+                xf = xf + "Total daylight " + str(p_daylighthrs) + " hours with sunshine for " + str(p_sunshinehrs) + " hours (" + str(p_pct_ss) + "%). "
+                xf = xf + precip_str
+                xf = xf + "Winds were primarily from the " + p_winddir + " gusting to " + str(p_windgust) + " " + cu_windspeed + "."
+                print(xf)
+                
+                # Send data to Adafruit IO - still within the try block
+                np[0] = Color.black
+                metadata = {"lat": os.getenv('LATITUDE'), "lon": os.getenv('LONGITUDE'), "created_at": p_time}
+                
+                # Get individual past feed (these are dynamic per day)
+                print(f"Getting feed: {p_name}")
+                PastDatai = io.get_feed(p_name)
+                time.sleep(AIO_SEND_DELAY)  # Delay after getting feed
+                print(f"Sending data to {p_name}")
+                
+                # Send data using cached and individual feeds (one at a time with delays)
+                io.send_data(PastDatai['key'], xf)
+                time.sleep(AIO_SEND_DELAY)
+                io.send_data(FEEDS['past_prec']['key'], p_precip, metadata)
+                time.sleep(AIO_SEND_DELAY)
+                io.send_data(FEEDS['past_rain']['key'], p_rain, metadata)
+                time.sleep(AIO_SEND_DELAY)
+                io.send_data(FEEDS['past_show']['key'], p_showers, metadata)
+                time.sleep(AIO_SEND_DELAY)
+                io.send_data(FEEDS['past_snow']['key'], p_snow, metadata)
+                time.sleep(AIO_SEND_DELAY)
+                io.send_data(FEEDS['past_maxtemp']['key'], p_tempmax, metadata)
+                time.sleep(AIO_SEND_DELAY)
+                io.send_data(FEEDS['past_mintemp']['key'], p_tempmin, metadata)
+                time.sleep(AIO_SEND_DELAY)
+                io.send_data(FEEDS['past_daylight']['key'], p_daylighthrs, metadata)
+                time.sleep(AIO_SEND_DELAY)
+                io.send_data(FEEDS['past_sunlight']['key'], p_sunshinehrs, metadata)
+                print(f"Successfully sent data for {p_name}")
+                time.sleep(AIO_SEND_DELAY)
+            except Exception as e:
+                print(f"Error processing past data for {p_name if 'p_name' in locals() else 'unknown'}: {e}")
+                import sys
+                sys.print_exception(e)
+                time.sleep(5)
+                # Continue to next day even if this one fails " + p_winddir + " gusting to " + str(p_windgust) + " " + cu_windspeed + "."
+                print(xf)
+                
+                # Send data to Adafruit IO - still within the try block
+                np[0] = Color.black
+                metadata = {"lat": os.getenv('LATITUDE'), "lon": os.getenv('LONGITUDE'), "created_at": p_time}
+                # Get individual past feed (these are dynamic per day)
+                PastDatai = io.get_feed(p_name)
+                # Send data using cached and individual feeds
+                io.send_data(PastDatai['key'], xf)
+                io.send_data(FEEDS['past_prec']['key'], p_precip, metadata)
+                time.sleep(AIO_SEND_DELAY)
+                io.send_data(FEEDS['past_rain']['key'], p_rain, metadata)
+                io.send_data(FEEDS['past_show']['key'], p_showers, metadata)
+                io.send_data(FEEDS['past_snow']['key'], p_snow, metadata)
+                time.sleep(AIO_SEND_DELAY)
+                io.send_data(FEEDS['past_maxtemp']['key'], p_tempmax, metadata)
+                io.send_data(FEEDS['past_mintemp']['key'], p_tempmin, metadata)
+                io.send_data(FEEDS['past_daylight']['key'], p_daylighthrs, metadata)
+                time.sleep(AIO_SEND_DELAY)
+                io.send_data(FEEDS['past_sunlight']['key'], p_sunshinehrs, metadata)
+                print("."*66)
+                time.sleep(AIO_SEND_DELAY)
+            except Exception as e:
+                print(f"Error processing past data for {p_name}: {e}")
+                time.sleep(5)
+                # Continue to next day even if this one fails
+        
+        # Clean up response object after all past data is processed
+        try:
+            response.close()
+            del response
+            del past_data
+            del daily
+            gc.collect()
+        except Exception as e:
+            print(f"Error cleaning up past data: {e}")
+        
+        np[0] = Color.green
+        
+        # Send summary using current weather data
+        try:
+            xf = ", ".join(c_outfull)
+            io.send_data(FEEDS['past_data']['key'], xf)
+            print(xf)
+        except Exception as e:
+            print(f"Failed to send past data summary: {e}")
+            time.sleep(5)
+        
+        try:
+            io.send_data(FEEDS['rt']['key'], "117-OM Past Updated")
+        except Exception as e:
+            print(f"Failed to send RT update: {e}")
+        past += 1
+        microcontroller.nvm[0] = past
+    else:
+        past += 1
+        microcontroller.nvm[0] = past
+    
+    np[0] = 0x0000FF
+    # Set LED colors based on past counter
+    c0 = 0xFF0000 if past < 14 else 0xFFFFFF
+    c1 = 0x0000FF if past < 18 else 0x000000
+    c2 = 0x888855 if past < 22 else 0x00FF00
+    print(f"Past counter: {past}, LED colors set to c0: {hex(c0)}, c1: {hex(c1)}, c2: {hex(c2)}")
+    # Display loop - UPDATE_INTERVAL seconds
+    for life in range(UPDATE_INTERVAL):
+        b = min((life / UPDATE_INTERVAL) + 0.01, 1.0)
+        np.brightness = b
+        np[0] = c0
+        dgts.print(c_temp)
+        time.sleep(1)
+        np[0] = c1
+        dgts.print(c_feelsLike)
+        time.sleep(1)
+        np[0] = c2
+        dgts.print(c_windspeed)
+        time.sleep(1)
+
+    print("Reloading for next update cycle...")
+    print("==="*20)
+    time.sleep(1)
+    supervisor.reload()
+

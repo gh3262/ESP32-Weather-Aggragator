@@ -1,0 +1,4 @@
+Adafruit CircuitPython 10.0.3 on 2025-10-17; Adafruit Feather ESP32-C6 4MB Flash No PSRAM with ESP32C6
+Board ID:adafruit_feather_esp32c6_4mbflash_nopsram
+UID:C9E9E6B5880C
+MAC:9C:9E:6E:5B:88:C0
