@@ -4,7 +4,11 @@
 #include <SPI.h>
 #include <WiFi.h>
 #include <esp_sntp.h>
+#include <esp_wifi.h>
 #include <time.h>
+#include <atomic>
+#include "status_pixels.h"
+#include "wifi_retry.h"
 
 #if __has_include("credentials.h")
 #include "credentials.h"
@@ -14,10 +18,12 @@
 
 namespace {
 constexpr uint32_t kConnectTimeoutMs = 20000;
+constexpr uint32_t kScanDeadlineMs = 20000;
 constexpr uint32_t kRetryDelayMs = 15000;
 constexpr uint32_t kRefreshMs = 1000;
 constexpr uint32_t kNtpTimeoutMs = 15000;
 constexpr uint32_t kNtpRetryMs = 60000;
+constexpr bool kEnableStatusPixels = true;
 constexpr int16_t kMargin = 16;
 constexpr int16_t kContentWidth = 288;
 
@@ -30,12 +36,65 @@ uint32_t lastRefreshAt = 0;
 uint32_t attempts = 0;
 bool refreshNeeded = true;
 bool wifiReady = false;
+bool pixelsReady = false;
 const char* networkMessage = "Not configured";
 size_t selectedNetwork = WIFI_NETWORK_COUNT;
 bool timeSynchronized = false;
 bool ntpPending = false;
 bool ntpStarted = false;
 uint32_t ntpStartedAt = 0;
+std::atomic<int32_t> scanEventStatus{-1};
+
+wifi_retry::SavedNetwork knownNetworks[WIFI_NETWORK_COUNT];
+
+void logWifiDisconnect(WiFiEvent_t event, WiFiEventInfo_t info) {
+  if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
+    const uint8_t reason = info.wifi_sta_disconnected.reason;
+    Serial.printf("Wi-Fi: station disconnected; ESP32 reason=%u (%s)\n",
+                  static_cast<unsigned>(reason),
+                  WiFi.disconnectReasonName(static_cast<wifi_err_reason_t>(reason)));
+  }
+}
+
+void logWifiScan(WiFiEvent_t event, WiFiEventInfo_t info) {
+  if (event == ARDUINO_EVENT_WIFI_SCAN_DONE) {
+    Serial.printf("Wi-Fi: scan completion event; status=%lu, results=%u\n",
+                  static_cast<unsigned long>(info.wifi_scan_done.status),
+                  static_cast<unsigned>(info.wifi_scan_done.number));
+    scanEventStatus.store(static_cast<int32_t>(info.wifi_scan_done.status));
+  }
+}
+
+void updateStatusPixel() {
+  if (!pixelsReady) {
+    return;
+  }
+  static bool havePreviousState = false;
+  static NetworkState previousState = NetworkState::Unconfigured;
+  if (havePreviousState && networkState == previousState) {
+    return;
+  }
+  bool success;
+  switch (networkState) {
+    case NetworkState::Online:
+      success = status_pixels::setPixel(0, 0, 255, 0);
+      break;
+    case NetworkState::Scanning:
+    case NetworkState::Connecting:
+      success = status_pixels::setPixel(0, 255, 100, 0);
+      break;
+    default:
+      success = status_pixels::setPixel(0, 255, 0, 0);
+      break;
+  }
+  if (success) {
+    previousState = networkState;
+    havePreviousState = true;
+  } else {
+    pixelsReady = false;
+    Serial.println("ERROR: status pixel disabled after write failure");
+  }
+}
 
 bool hasConfiguredNetworks() {
   for (size_t i = 0; i < WIFI_NETWORK_COUNT; ++i) {
@@ -91,14 +150,30 @@ const char* wifiStatusText(wl_status_t status) {
 }
 
 void waitForRetry(uint32_t now, const char* message) {
+  // Cancel work without deinitializing the radio between discovery cycles.
+  if (!WiFi.disconnect(false, false)) {
+    Serial.println("ERROR: unable to cancel Wi-Fi connection before retry");
+  }
+  const esp_err_t scanStop = esp_wifi_scan_stop();
+  if (scanStop != ESP_OK) {
+    Serial.printf("ERROR: unable to stop Wi-Fi scan before retry: %s\n",
+                  esp_err_to_name(scanStop));
+  }
+  WiFi.scanDelete();
   networkMessage = message;
   networkState = NetworkState::Waiting;
   stateStartedAt = now;
   refreshNeeded = true;
-  Serial.printf("Wi-Fi: %s; rescanning in 15 seconds\n", message);
+  Serial.printf("Wi-Fi: %s; retrying in 15 seconds\n", message);
 }
 
+bool connectCachedNetwork(uint32_t now);
+
 void startScan(uint32_t now) {
+  if (!WiFi.mode(WIFI_STA)) {
+    waitForRetry(now, "Wi-Fi restart failed");
+    return;
+  }
   stateStartedAt = now;
   selectedNetwork = WIFI_NETWORK_COUNT;
   networkState = NetworkState::Scanning;
@@ -106,15 +181,23 @@ void startScan(uint32_t now) {
   refreshNeeded = true;
   WiFi.scanDelete();
   Serial.println("Wi-Fi: scanning for configured networks");
+  scanEventStatus.store(-1);
   const int16_t result = WiFi.scanNetworks(true);
   if (result == WIFI_SCAN_FAILED) {
-    waitForRetry(now, "Scan failed");
+    Serial.printf("Wi-Fi: scan could not start; status=%d, mode=%d\n",
+                  static_cast<int>(WiFi.status()),
+                  static_cast<int>(WiFi.getMode()));
+    Serial.println("Wi-Fi: scan failed; trying last known saved networks");
+    if (!connectCachedNetwork(now)) {
+      waitForRetry(now, "Scan failed");
+    }
   }
 }
 
 void connectStrongestNetwork(uint32_t now, int16_t found) {
-  int16_t strongest = -1;
-  int32_t strongestRssi = INT32_MIN;
+  for (wifi_retry::SavedNetwork& network : knownNetworks) {
+    network.visible = false;
+  }
   for (int16_t i = 0; i < found; ++i) {
     const String ssid = WiFi.SSID(i);
     for (size_t j = 0; j < WIFI_NETWORK_COUNT; ++j) {
@@ -122,24 +205,23 @@ void connectStrongestNetwork(uint32_t now, int16_t found) {
           !wifiNetworks[j].password || ssid != wifiNetworks[j].ssid) {
         continue;
       }
-      if (WiFi.RSSI(i) > strongestRssi && WiFi.BSSID(i)) {
-        strongest = i;
-        strongestRssi = WiFi.RSSI(i);
-        selectedNetwork = j;
-      }
+      knownNetworks[j].observe(WiFi.RSSI(i));
       break;
     }
   }
-  if (strongest < 0) {
-    WiFi.scanDelete();
-    waitForRetry(now, "No known Wi-Fi");
-    return;
-  }
-
-  uint8_t bssid[6];
-  memcpy(bssid, WiFi.BSSID(strongest), sizeof(bssid));
-  const int32_t channel = WiFi.channel(strongest);
   WiFi.scanDelete();
+  if (!connectCachedNetwork(now)) {
+    waitForRetry(now, "No eligible Wi-Fi");
+  }
+}
+
+bool connectCachedNetwork(uint32_t now) {
+  const size_t strongest =
+      wifi_retry::selectStrongest(knownNetworks, WIFI_NETWORK_COUNT, now);
+  if (strongest == WIFI_NETWORK_COUNT) {
+    return false;
+  }
+  selectedNetwork = strongest;
   const WiFiCredential& credential = wifiNetworks[selectedNetwork];
   WiFi.setMinSecurity(credential.password[0] ? WIFI_AUTH_WPA2_PSK
                                            : WIFI_AUTH_OPEN);
@@ -148,9 +230,16 @@ void connectStrongestNetwork(uint32_t now, int16_t found) {
   networkState = NetworkState::Connecting;
   networkMessage = "Connecting";
   refreshNeeded = true;
-  Serial.printf("Wi-Fi: starting connection attempt %lu\n",
-                static_cast<unsigned long>(attempts));
-  WiFi.begin(credential.ssid, credential.password, channel, bssid);
+  Serial.printf("Wi-Fi: starting connection attempt %lu; credential #%u, "
+                "scan RSSI=%ld dBm; driver selects access point/channel\n",
+                static_cast<unsigned long>(attempts),
+                static_cast<unsigned>(selectedNetwork + 1),
+                static_cast<long>(knownNetworks[strongest].rssi));
+  const wl_status_t result =
+      WiFi.begin(credential.ssid, credential.password);
+  Serial.printf("Wi-Fi: begin returned status=%d (%s)\n",
+                static_cast<int>(result), wifiStatusText(result));
+  return true;
 }
 
 void updateNetwork(uint32_t now) {
@@ -158,12 +247,32 @@ void updateNetwork(uint32_t now) {
     return;
   }
   if (networkState == NetworkState::Scanning) {
-    const int16_t found = WiFi.scanComplete();
+    const int32_t eventStatus = scanEventStatus.load();
+    if (eventStatus == -1 && now - stateStartedAt < kScanDeadlineMs) {
+      return;
+    }
+    // Read results only after completion to avoid the wrapper's six-second
+    // polling timeout aborting valid scans that take longer.
+    const int16_t found = eventStatus == 0 ? WiFi.scanComplete() : WIFI_SCAN_FAILED;
     if (found >= 0) {
+      Serial.printf("Wi-Fi: scan found %d access points in %lu ms\n",
+                    static_cast<int>(found),
+                    static_cast<unsigned long>(now - stateStartedAt));
       connectStrongestNetwork(now, found);
     } else if (found == WIFI_SCAN_FAILED) {
+      Serial.printf("Wi-Fi: scan failed after %lu ms; status=%d, event_status=%ld\n",
+                    static_cast<unsigned long>(now - stateStartedAt),
+                    static_cast<int>(WiFi.status()), static_cast<long>(eventStatus));
+      const esp_err_t scanStop = esp_wifi_scan_stop();
+      if (scanStop != ESP_OK) {
+        Serial.printf("ERROR: unable to cancel timed-out Wi-Fi scan: %s\n",
+                      esp_err_to_name(scanStop));
+      }
       WiFi.scanDelete();
-      waitForRetry(now, "Scan failed");
+      Serial.println("Wi-Fi: scan failed; trying last known saved networks");
+      if (!connectCachedNetwork(now)) {
+        waitForRetry(now, "Scan failed");
+      }
     }
     return;
   }
@@ -171,12 +280,13 @@ void updateNetwork(uint32_t now) {
   const wl_status_t status = WiFi.status();
   if (status == WL_CONNECTED) {
     if (networkState != NetworkState::Online) {
+      knownNetworks[selectedNetwork].retry.reset();
       networkState = NetworkState::Online;
       networkMessage = "Connected";
       refreshNeeded = true;
-      Serial.printf("Wi-Fi: connected; IP %s; RSSI %ld dBm\n",
+      Serial.printf("Wi-Fi: connected; IP %s; RSSI %ld dBm; channel=%ld\n",
                     WiFi.localIP().toString().c_str(),
-                    static_cast<long>(WiFi.RSSI()));
+                    static_cast<long>(WiFi.RSSI()), static_cast<long>(WiFi.channel()));
       startTimeSync(now);
     }
     return;
@@ -189,9 +299,14 @@ void updateNetwork(uint32_t now) {
     networkMessage = status == WL_IDLE_STATUS || status == WL_DISCONNECTED
                          ? "Connection timed out"
                          : wifiStatusText(status);
-    if (!WiFi.disconnect()) {
-      Serial.println("Wi-Fi: failed to stop the connection attempt");
-    }
+    Serial.printf("Wi-Fi: connection timed out with status=%d (%s)\n",
+                  static_cast<int>(status), wifiStatusText(status));
+    wifi_retry::NetworkRetry& retry = knownNetworks[selectedNetwork].retry;
+    retry.failed(now);
+    Serial.printf("Wi-Fi: credential #%u saved-network failure %u/%u%s\n",
+                  static_cast<unsigned>(selectedNetwork + 1),
+                  retry.failures, wifi_retry::kFailureThreshold,
+                  retry.coolingDown ? "; cooling down for 10 minutes" : "");
     waitForRetry(now, networkMessage);
   } else if (networkState == NetworkState::Waiting &&
              now - stateStartedAt >= kRetryDelayMs) {
@@ -275,6 +390,11 @@ void setup() {
   // USB CDC leaves the TX/RX header pins available for the display.
   Serial.begin(115200);
   Serial.println("\nWeather aggregator: hardware and Wi-Fi bring-up");
+  if (kEnableStatusPixels) {
+    pixelsReady = status_pixels::begin();
+  } else {
+    Serial.println("Diagnostic: NeoPixel initialization and updates disabled");
+  }
 
   pinMode(A3, OUTPUT);
   digitalWrite(A3, HIGH);  // Deselect the unused SD card on the shared SPI bus.
@@ -293,6 +413,8 @@ void setup() {
                 static_cast<unsigned long>(ESP.getFreeHeap()),
                 static_cast<unsigned long>(ESP.getPsramSize()));
 
+  WiFi.onEvent(logWifiDisconnect, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
+  WiFi.onEvent(logWifiScan, ARDUINO_EVENT_WIFI_SCAN_DONE);
   WiFi.persistent(false);
   wifiReady = WiFi.mode(WIFI_STA);
   if (!wifiReady) {
@@ -309,6 +431,7 @@ void setup() {
     startScan(millis());
   }
   lastRefreshAt = millis();
+  updateStatusPixel();
   drawStatus(lastRefreshAt);
   refreshNeeded = false;
 }
@@ -317,6 +440,7 @@ void loop() {
   const uint32_t now = millis();
   updateNetwork(now);
   updateTime(now);
+  updateStatusPixel();
   if (refreshNeeded || now - lastRefreshAt >= kRefreshMs) {
     drawStatus(now);
     lastRefreshAt = now;

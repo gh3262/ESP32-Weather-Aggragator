@@ -25,4 +25,19 @@ const size_t WIFI_NETWORK_COUNT =
 #define AIO_USERNAME ""
 #define AIO_KEY ""
 
+// Data-provider credentials. Replace placeholders in credentials.h only.
+#define OPENWEATHER_KEY "YOUR_OPENWEATHER_KEY"
+#define WEATHERAPI_KEY "YOUR_WEATHERAPI_KEY"
+#define VISUAL_CROSSING_KEY "YOUR_VISUAL_CROSSING_KEY"
+#define WWO_KEY "YOUR_WORLD_WEATHER_ONLINE_KEY"
+#define EXCHANGE_RATE_KEY "YOUR_EXCHANGE_RATE_KEY"
+
+// Decimal-degree strings for location-based requests. Replace in credentials.h.
+#define LATITUDE "0.0"
+#define LONGITUDE "0.0"
+
+// Location label and IANA timezone for provider API requests.
+#define LOCATION "YOUR_CITY, COUNTRY"
+#define TIMEZONE "Etc/UTC"
+
 #endif
