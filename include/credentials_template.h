@@ -24,6 +24,9 @@ const size_t WIFI_NETWORK_COUNT =
 
 #define AIO_USERNAME ""
 #define AIO_KEY ""
+// Adafruit IO WeatherKit Power-Up location ID (IO+), shown on the weather
+// services page. Used as integration/weather/<ID>/<forecast type> over MQTT.
+#define AIO_WEATHER_LOCATION_ID ""
 
 // Data-provider credentials. Replace placeholders in credentials.h only.
 #define OPENWEATHER_KEY "YOUR_OPENWEATHER_KEY"

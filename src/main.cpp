@@ -8,6 +8,7 @@
 #include <time.h>
 #include <atomic>
 #include "status_pixels.h"
+#include "aio_publisher.h"
 #include "wifi_retry.h"
 
 #if __has_include("credentials.h")
@@ -390,6 +391,7 @@ void setup() {
   // USB CDC leaves the TX/RX header pins available for the display.
   Serial.begin(115200);
   Serial.println("\nWeather aggregator: hardware and Wi-Fi bring-up");
+  aio_publisher::begin();
   if (kEnableStatusPixels) {
     pixelsReady = status_pixels::begin();
   } else {
@@ -440,6 +442,8 @@ void loop() {
   const uint32_t now = millis();
   updateNetwork(now);
   updateTime(now);
+  aio_publisher::update(networkState == NetworkState::Online,
+                        timeSynchronized, now);
   updateStatusPixel();
   if (refreshNeeded || now - lastRefreshAt >= kRefreshMs) {
     drawStatus(now);

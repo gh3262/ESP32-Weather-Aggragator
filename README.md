@@ -50,8 +50,90 @@ PlatformIO/Arduino firmware for a Seeed Studio XIAO ESP32-S3 with an Adafruit
   Enabled using `kEnableStatusPixels = true`; set it to `false` to isolate
   pixel initialization and updates during Wi-Fi diagnostics.
 
-Weather collection and Adafruit IO publishing are not implemented yet.
+Weather collection and feed adapters are not implemented yet. The main firmware
+now has the Adafruit IO MQTT transport and paced publish queue; no weather
+samples are wired into it yet.
 [The feed catalog](WEATHER_FEED_CATALOG.csv) remains the migration reference.
+
+### Adafruit IO publishing foundation
+
+The application starts its TLS-verified MQTT connection after Wi-Fi and NTP are
+ready. Feed samples are submitted in named groups; the queue publishes one
+sample at a time, waits for its QoS 1 acknowledgement, and spaces publish
+attempts by at least two seconds. This caps application traffic at 30 publishes
+per minute, including entries sent to `aggregator.log`, leaving account
+capacity for other feeds. The queue is bounded and rejects new groups when it
+cannot accept them; callers must report that result rather than silently losing
+updates.
+
+After every sample in a group is acknowledged, one concise success entry for
+the group is queued to `aggregator.log` (the replacement for the old `rt` log
+feed). MQTT connection and publish failures are also reported there when
+possible. Detailed development and status output remains on USB serial and is
+not forwarded to the log feed. Weather-group selection, failure retry policy,
+and log message format can be refined as provider groups are added. Create the
+`aggregator.log` feed in Adafruit IO before enabling publishing.
+
+### Planned weather collection and publishing
+
+The planned design is change-driven: fetch each provider response on a
+request-level schedule, extract all of its feed samples, and publish only
+samples whose values have changed. Most providers return multiple useful
+measurements in one JSON response, so fetch frequency should be chosen for the
+source data (for example, current weather every five minutes), not independently
+for each Adafruit IO feed. A response can update many feeds while still using
+one provider request.
+
+The collection and publishing flow will be:
+
+1. Fetch each provider request group at its configured interval. Requests that
+   return distinct data, such as current/forecast data and historical data, can
+   have different intervals.
+2. Parse and validate the response, then use the provider adapter to produce
+   feed samples with normalized values, formatting, and timestamps.
+3. Compare each sample with the last successfully published value for that
+   feed. Compare the final normalized/formatted value so insignificant
+   floating-point differences do not cause unnecessary updates.
+4. Queue changed samples and drain the queue at a controlled rate that respects
+   the configured Adafruit IO publishing limit. Mark a sample as published
+   only after the send succeeds; report failures through diagnostics.
+
+The change-detection key for ordinary feeds is the feed. Historical feeds need
+to include the sample timestamp (for example, the date) so updates to different
+days are tracked independently. Unchanged values should also be republished
+periodically as a heartbeat, so dashboards do not remain stale indefinitely.
+The heartbeat interval and whether change state is persisted across reboots
+remain design choices; an in-memory cache would resend values after reboot,
+while persistent state could reduce that startup burst.
+
+Fetch timing still matters for freshness, and queue pacing still matters when
+many values change together (such as at startup or when a forecast updates).
+The queue replaces per-feed timing rotations: a burst can be spread across
+time without delaying the next provider fetch. Where a provider response is
+large, parsing should retain only the fields needed by the configured feeds to
+manage ESP32 memory use.
+
+Open-Meteo is a useful example. The existing CircuitPython implementation
+requests current/forecast data and, separately, past-day data; it then iterates
+over days from that response to update dated historical feeds. These are two
+request groups, not one request per feed or day. The ESP32 implementation can
+schedule the past-data request less often than current conditions, and can
+evaluate whether combining the requests is safe after measuring response size
+and memory use.
+
+Apple WeatherKit is planned as a pushed source rather than a polled one. The
+Adafruit IO WeatherKit Power-Up (IO+) publishes each forecast block on its own
+MQTT topic, `{username}/integration/weather/{location_id}/{type}`, for the types
+`current`, `forecast_minutes_5`, `forecast_minutes_30`, `forecast_hours_1`,
+`forecast_hours_2`, `forecast_hours_6`, `forecast_hours_24`, `forecast_days_1`,
+`forecast_days_2`, and `forecast_days_5`. These match the groups the
+CircuitPython rotation (`f1.py`-`f8a.py`) split manually, and each message is
+much smaller than the combined HTTP response from `receive_weather`. Each topic
+acts as a request group whose updates arrive when Adafruit IO has new data;
+samples still pass through the same change filter and publishing queue.
+Early measurements with the WeatherKit MQTT diagnostic build below show
+non-retained pushes of every topic about once a minute; longer runs will confirm
+cadence, change frequency, and stability before this is relied on.
 
 ## Isolated Wi-Fi diagnostic build
 
@@ -104,6 +186,71 @@ Restore the application using **seeed_xiao_esp32s3 / Upload and Monitor** or:
 ```powershell
 pio run -e seeed_xiao_esp32s3 --target upload
 ```
+
+## WeatherKit MQTT diagnostic build
+
+The `weatherkit_mqtt_diagnostic` environment compiles only
+[weatherkit_mqtt_diagnostic.cpp](src/weatherkit_mqtt_diagnostic.cpp). It is a
+long-running observation tool for the planned WeatherKit MQTT source, with no
+display, NeoPixel, or publishing. It requires `AIO_USERNAME`, `AIO_KEY`,
+`AIO_WEATHER_LOCATION_ID` (the Power-Up location ID), and at least one Wi-Fi
+network in `include/credentials.h`.
+
+```powershell
+pio run -e weatherkit_mqtt_diagnostic --target upload
+pio device monitor -e weatherkit_mqtt_diagnostic
+```
+
+After a ten-second wait for the monitor, it cycles through saved Wi-Fi networks
+in order (20 seconds each, no scan ranking), synchronizes NTP, then connects to
+`mqtts://io.adafruit.com:8883`. TLS is verified against the DigiCert Global
+Root G2 certificate (valid until 2038), so server-certificate renewals do not
+require a firmware change; NTP time is required first for certificate validity
+checks. It uses ESP-IDF's MQTT client, which reconnects automatically and
+delivers messages larger than its 4 KB buffer in pieces, so payloads of any
+size are measured rather than silently dropped.
+
+On every connection, it subscribes to all ten WeatherKit topics plus
+`{username}/errors` and `{username}/throttle`. Each received message logs local
+time, uptime, forecast type, size, whether it is the first, changed, or
+unchanged compared with that topic's previous payload (by hash), the retain
+flag, time since the topic's previous message, time after subscribing for the
+first message, and free heap. Changed messages also list the individual JSON
+fields that changed, with old and new values (up to 15 per message). The full
+JSON payload is printed for each topic's first message after boot. Up to 16 KB
+of each topic's latest payload is kept for printing; the size and change
+detection always cover the full message.
+
+Messages are logged from the MQTT task into a queue (capped at 64 KB, with a
+dropped-line count if exceeded) that `loop()` writes to the serial port.
+Arduino-ESP32 2.0.x's native USB serial driver loses bytes when written from a
+core other than the one that started it, which clipped log lines before this.
+
+A summary table (message count, changes, retained count, last/maximum size,
+average interval, and time since last message for each topic, plus MQTT
+connection/error counts, RSSI, and heap) and the most frequently changed fields
+for each topic print every 30 minutes. Serial
+commands: `s` prints the summary now, `p` prints the latest payloads, `v`
+toggles full payload logging for every message, `r` unsubscribes and
+resubscribes to measure initial delivery again, and `?` repeats the help.
+The Adafruit IO key and Wi-Fi passwords are never logged.
+
+Questions to answer from a multi-hour run:
+
+- Whether subscribing delivers data immediately (retained) or only at the next
+  update, which decides whether startup needs an HTTP fetch.
+- Message sizes, to choose parser buffers for the application.
+- Update interval per topic, and how often each payload actually changes.
+- Connection stability, and any Adafruit IO error or throttle messages.
+
+Initial short runs showed that all ten topics are pushed together about once a
+minute, not retained: the first data arrives at the next push, up to about a
+minute after subscribing (one push was occasionally skipped). Sizes were about
+91 bytes for `forecast_minutes_*`, 470-480 bytes for `forecast_hours_*`, 730
+bytes for `current`, and 1.6 KB for `forecast_days_*`, with about 220 KB of
+heap free. Many pushes repeat the previous payload unchanged.
+
+Restore the application afterwards with the `seeed_xiao_esp32s3` upload above.
 
 ## NeoPixel ring
 
@@ -216,8 +363,10 @@ is upside down, change `setRotation(3)` to `setRotation(1)`.
    Set `NTP_SERVER_1`, `NTP_SERVER_2`, and `TZ_STRING` for time synchronization.
    `TZ_STRING` must be a POSIX rule (for example, `CST6CDT,M3.2.0,M11.1.0`
    for US Central), not an IANA name. The template defaults to UTC.
-   Adafruit IO and data-provider placeholders are reserved for the later feed
-   implementation. The provider keys are `OPENWEATHER_KEY`, `WEATHERAPI_KEY`,
+   Set `AIO_USERNAME` and `AIO_KEY` for the main firmware's publisher and the
+   WeatherKit MQTT diagnostic. The diagnostic also requires
+   `AIO_WEATHER_LOCATION_ID`. The provider keys are `OPENWEATHER_KEY`,
+   `WEATHERAPI_KEY`,
    `VISUAL_CROSSING_KEY`, `WWO_KEY` (World Weather Online), and
    `EXCHANGE_RATE_KEY`. Historical settings names `openweather_token` and
    `WEATHER_API_KEY` duplicate `OPENWEATHER_KEY` and `WEATHERAPI_KEY`,
