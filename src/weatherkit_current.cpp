@@ -30,9 +30,26 @@ struct Sample {
 using feed_config::Conversion;
 using feed_config::Mapping;
 
+struct Snapshot {
+  Group group;
+  std::string payload;
+};
+
+const char* groupName(Group group) {
+  switch (group) {
+    case Group::Current: return "WeatherKit current";
+    case Group::Minutes5: return "WeatherKit m5";
+    case Group::Minutes30: return "WeatherKit m30";
+    case Group::Hour1: return "WeatherKit hour1";
+    default: return "WeatherKit unknown";
+  }
+}
+
 std::mutex receiveLock;
-std::deque<std::string> incoming;
+std::deque<Snapshot> incoming;
 std::string assembly;
+Group assemblyGroup = Group::None;
+Group waitingGroup = Group::None;
 size_t expectedTotal = 0;
 bool assembling = false;
 uint32_t receiveFailures = 0;
@@ -53,11 +70,16 @@ bool convert(JsonVariantConst input, const Mapping& mapping, std::string& output
     output = text;
     return true;
   }
-  if (mapping.conversion == Conversion::Boolean) {
+  if (mapping.conversion == Conversion::Boolean ||
+      mapping.conversion == Conversion::ForecastDaylight) {
     if (!input.is<bool>()) {
       return false;
     }
-    output = input.as<bool>() ? "Its light" : "Its dark";
+    if (mapping.conversion == Conversion::ForecastDaylight) {
+      output = input.as<bool>() ? "It will be light" : "It will be dark";
+    } else {
+      output = input.as<bool>() ? "Its light" : "Its dark";
+    }
     return true;
   }
   if (input.is<bool>() || !input.is<double>() ||
@@ -134,12 +156,13 @@ bool convert(JsonVariantConst input, const Mapping& mapping, std::string& output
 }
 
 bool parse(const std::string& payload, std::vector<Sample>& samples,
-           const Mapping* mappings, size_t mappingCount) {
+           const Mapping* mappings, size_t mappingCount,
+           Group group = Group::Current) {
   JsonDocument document;
   const DeserializationError error = deserializeJson(
       document, payload, DeserializationOption::NestingLimit(8));
   if (error || !document.is<JsonObject>()) {
-    Serial.printf("WeatherKit current ERROR: invalid JSON/object (%s)\n",
+    Serial.printf("%s ERROR: invalid JSON/object (%s)\n", groupName(group),
                   error ? error.c_str() : "root is not an object");
     return false;
   }
@@ -154,27 +177,27 @@ bool parse(const std::string& payload, std::vector<Sample>& samples,
     const JsonVariantConst input = current[mapping.field];
     std::string value;
     if (!convert(input, mapping, value)) {
-      Serial.printf("WeatherKit current: skipped missing/invalid field %s\n",
-                    mapping.field);
+      Serial.printf("%s: skipped missing/invalid field %s\n",
+                    groupName(group), mapping.field);
       continue;
     }
     samples.push_back({mapping.feed, value});
   }
   if (!haveEnabledMapping) {
-    Serial.println("WeatherKit current: no output feeds enabled");
+    Serial.printf("%s: no output feeds enabled\n", groupName(group));
     return true;
   }
   if (samples.empty()) {
-    Serial.println("WeatherKit current ERROR: no valid samples in message");
+    Serial.printf("%s ERROR: no valid samples in message\n", groupName(group));
     return false;
   }
-  Serial.printf("WeatherKit current: parsed %u valid feed samples\n",
+  Serial.printf("%s: parsed %u valid feed samples\n", groupName(group),
                 static_cast<unsigned>(samples.size()));
   return true;
 }
 }
 
-void receive(bool currentTopic, const char* data, size_t length,
+void receive(Group group, const char* data, size_t length,
              size_t offset, size_t total) {
   std::lock_guard<std::mutex> guard(receiveLock);
   if (offset == 0) {
@@ -183,7 +206,7 @@ void receive(bool currentTopic, const char* data, size_t length,
     }
     assembling = false;
     assembly.clear();
-    if (!currentTopic) {
+    if (group == Group::None) {
       return;
     }
     if (total == 0 || total > kMaxPayloadBytes) {
@@ -191,6 +214,7 @@ void receive(bool currentTopic, const char* data, size_t length,
       return;
     }
     expectedTotal = total;
+    assemblyGroup = group;
     assembling = true;
   }
   if (!assembling) {
@@ -208,7 +232,7 @@ void receive(bool currentTopic, const char* data, size_t length,
     if (incoming.size() >= kMaxPendingSnapshots) {
       ++receiveFailures;
     } else {
-      incoming.push_back(std::move(assembly));
+      incoming.push_back({assemblyGroup, std::move(assembly)});
     }
     assembly.clear();
     assembling = false;
@@ -225,26 +249,48 @@ void disconnected() {
 }
 
 void update(uint32_t now) {
-  std::string payload;
+  Snapshot snapshot{Group::None, ""};
   uint32_t failures;
   {
     std::lock_guard<std::mutex> guard(receiveLock);
     failures = receiveFailures;
     receiveFailures = 0;
     if (waitingSamples.empty() && !incoming.empty()) {
-      payload = std::move(incoming.front());
+      snapshot = std::move(incoming.front());
       incoming.pop_front();
     }
   }
   if (failures) {
-    Serial.printf("WeatherKit current ERROR: %lu messages discarded "
+    Serial.printf("WeatherKit ERROR: %lu messages discarded "
                   "(oversize, invalid/incomplete chunks, or receive queue full)\n",
                   static_cast<unsigned long>(failures));
   }
-  if (!payload.empty()) {
-    parse(payload, waitingSamples, feed_config::weatherkitCurrent,
-          sizeof(feed_config::weatherkitCurrent) /
-              sizeof(feed_config::weatherkitCurrent[0]));
+  if (!snapshot.payload.empty()) {
+    waitingGroup = snapshot.group;
+    const Mapping* mappings = nullptr;
+    size_t count = 0;
+    switch (snapshot.group) {
+      case Group::Current:
+        mappings = feed_config::weatherkitCurrent;
+        count = sizeof(feed_config::weatherkitCurrent) / sizeof(Mapping);
+        break;
+      case Group::Minutes5:
+        mappings = feed_config::weatherkitMinutes5;
+        count = sizeof(feed_config::weatherkitMinutes5) / sizeof(Mapping);
+        break;
+      case Group::Minutes30:
+        mappings = feed_config::weatherkitMinutes30;
+        count = sizeof(feed_config::weatherkitMinutes30) / sizeof(Mapping);
+        break;
+      case Group::Hour1:
+        mappings = feed_config::weatherkitHour1;
+        count = sizeof(feed_config::weatherkitHour1) / sizeof(Mapping);
+        break;
+      default:
+        Serial.println("WeatherKit ERROR: invalid source group");
+        return;
+    }
+    parse(snapshot.payload, waitingSamples, mappings, count, snapshot.group);
   }
   if (waitingSamples.empty() || (retryPending && now - lastRetryAt < kRetryMs)) {
     return;
@@ -253,11 +299,12 @@ void update(uint32_t now) {
   for (const Sample& sample : waitingSamples) {
     samples.push_back({sample.key, sample.value.c_str()});
   }
-  if (aio_publisher::enqueueGroup("WeatherKit current", samples.data(), samples.size())) {
+  if (aio_publisher::enqueueGroup(groupName(waitingGroup), samples.data(), samples.size())) {
     waitingSamples.clear();
     retryPending = false;
   } else {
-    Serial.println("WeatherKit current: retaining snapshot for publish-queue retry");
+    Serial.printf("%s: retaining snapshot for publish-queue retry\n",
+                  groupName(waitingGroup));
     retryPending = true;
     lastRetryAt = now;
   }

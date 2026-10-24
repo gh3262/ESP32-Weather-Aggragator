@@ -50,9 +50,10 @@ PlatformIO/Arduino firmware for a Seeed Studio XIAO ESP32-S3 with an Adafruit
   Enabled using `kEnableStatusPixels = true`; set it to `false` to isolate
   pixel initialization and updates during Wi-Fi diagnostics.
 
-The main firmware receives WeatherKit current conditions through Adafruit IO
-MQTT and publishes changed values through the shared paced queue. Other
-providers and minute/hourly/daily forecast adapters are not implemented yet.
+The main firmware receives WeatherKit current conditions, 5-/30-minute
+forecasts, and hour-1 forecasts through Adafruit IO MQTT and publishes changed
+values through the shared paced queue. Other providers, other hourly horizons,
+and daily forecast adapters are not implemented yet.
 [The feed catalog](WEATHER_FEED_CATALOG.csv) remains the migration reference.
 
 ### Adafruit IO publishing foundation
@@ -173,14 +174,17 @@ its row. Add a row to publish another field in the current JSON object, using
 an existing conversion; a new conversion needs adapter code and tests.
 Changing a destination key redirects future values. Wind degrees and compass
 text are independent rows and can be enabled or disabled separately.
-All 20 existing outputs are enabled by default.
+All 20 current outputs and all six minute-forecast outputs are enabled by
+default. `weatherkitMinutes5` and `weatherkitMinutes30` configure their outputs
+independently using the same row format. `weatherkitHour1` independently
+configures 21 enabled hour-1 outputs.
 
 Rebuild, run the adapter/publisher tests, and upload after a configuration
 change. The default-mapping assertions in the adapter tests intentionally
 describe the shipping configuration; update their expected keys/counts/values
 when changing that configuration. Disabled fields are neither validated nor
 queued. Disabling every output is a serial-reported no-op; it does not stop
-the current-topic subscription.
+the associated source-topic subscription.
 
 Create and manage destination feeds in Adafruit IO separately before enabling
 their mappings. The firmware does not provision or delete feeds. Disabling or
@@ -207,11 +211,11 @@ fields such as the altitude-specific cloud covers may be absent. Each push is
 filtered against queued/acknowledged values; an entirely unchanged push creates
 no publish or log-feed entry. A changed group completes with
 `Sent feed group WeatherKit current - Number Updated: n` in `aggregator.log`.
-Minute, hourly, and
-daily topics are not subscribed by this application yet.
+Only hour 1 is enabled among hourly topics; daily topics are not subscribed yet.
 
 MQTT-task delivery assembles messages up to 4096 bytes, then hands complete
-snapshots to the main loop for parsing/publication. Up to four received
+snapshots to the main loop for parsing/publication. Across current, m5, m30, and hour1,
+up to four received
 snapshots wait behind one parsed snapshot; new arrivals beyond that limit are
 discarded with a serial error. Invalid/incomplete chunk sequences and oversize
 messages are likewise reported. If the publisher rejects a group, the parsed
@@ -225,6 +229,65 @@ For the board check, upload the main environment, watch for
 feeds. A full initial group of 20 feeds needs roughly 40 seconds to drain,
 plus queued logs. Subsequent unchanged pushes should show
 `feed group WeatherKit current unchanged; nothing queued`.
+
+### WeatherKit minute forecasts (m5 and m30)
+
+The same MQTT connection subscribes to `forecast_minutes_5` and
+`forecast_minutes_30` under the configured integration location, on every
+connection. These are forecast horizons, not polling intervals. Both use the
+shared receiver/parser in [weatherkit_current.cpp](src/weatherkit_current.cpp)
+and the same FIFO change filter, two-second pacing, and bounded receive queue
+as current conditions. Failed subscription enqueues retry independently every
+15 seconds while connected.
+
+| Source field | m5 destination | m30 destination | Output |
+| --- | --- | --- | --- |
+| `startTime` | `m5starttime` | `m30starttime` | Timestamp text |
+| `precipitationChance` | `m5precipitationchance` | `m30precipitationchance` | Fraction to whole percent, truncated |
+| `precipitationIntensity` | `m5precipitationintensity` | `m30precipitationintensity` | Raw nonnegative mm/h |
+
+Missing/invalid fields are reported on serial and skipped; valid zero values
+are published. Timestamp changes count as changes even when precipitation is
+unchanged. Completely unchanged groups generate no feed writes or completion
+logs. Completed changed groups produce local-time-prefixed entries such as:
+
+```text
+20261024120000 Sent feed group WeatherKit m5 - Number Updated: 3
+20261024120006 Sent feed group WeatherKit m30 - Number Updated: 3
+```
+
+After uploading the main environment, wait for the next MQTT push and look for
+`WeatherKit m5: parsed 3 valid feed samples` and the equivalent m30 message.
+Verify the six existing minute feeds and both completion logs. A startup burst
+of all 26 current/minute values needs roughly 52 seconds, plus logs, to drain;
+arrival order determines which group publishes first. With hour 1 also enabled,
+the startup burst is 47 values, roughly 94 seconds plus logs. Subsequent updates are
+change-driven, not forced every five or thirty minutes. Do not run another
+publisher against these same destination feeds.
+
+### WeatherKit hour-1 forecast
+
+The main MQTT connection also subscribes to `forecast_hours_1`. No other
+hourly horizons are subscribed. Its 21 `hours1*` outputs follow the legacy
+[hour-1 handler](circuitpython/Apple_Weatherkit/f1.py), with independently
+enabled mappings in [feed_config.h](include/feed_config.h).
+
+`forecastStart` is timestamp text; cloud cover, humidity, and precipitation
+chance become whole percentages; temperatures become Fahrenheit with one
+decimal; wind speeds become whole mph; wind direction becomes compass text.
+Forecast daylight uses `It will be light` / `It will be dark`, unlike the
+current-condition wording. Visibility deliberately remains raw meters to
+preserve the legacy hour-1 feed, rather than current conditions' whole miles.
+Pressure (hPa), precipitation/snow amounts (mm), intensities (mm/h), UV,
+condition, and trend retain their provider representations.
+
+Missing/invalid fields are skipped and reported without manufactured zeroes.
+All valid changed values use the shared FIFO publishing queue and rate limit.
+After uploading, expect `WeatherKit hour1: parsed ... valid feed samples`,
+updates to available `hours1*` feeds, and a log entry such as
+`20261024123000 Sent feed group WeatherKit hour1 - Number Updated: 21`.
+Some source fields may be absent, so the valid count can be lower than 21.
+Unchanged pushes create no publishes or completion logs.
 
 ### Planned weather collection and publishing
 
@@ -468,7 +531,7 @@ Providers must identify source units explicitly and avoid reconverting values
 already in the desired units. A provider's missing-field policy, unit metadata,
 output precision, and text formatting belong in its adapter.
 
-These helpers are used by the WeatherKit current adapter. Feed change detection
+These helpers are used by the WeatherKit current/minute adapter. Feed change detection
 is implemented in the publisher. UTC/freshness handling, provider descriptions,
 averaging, and pressure trends will
 be added with the relevant collection/publishing infrastructure.

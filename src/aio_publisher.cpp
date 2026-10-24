@@ -87,10 +87,23 @@ std::atomic<bool> brokerReportedError{false};
 std::atomic<bool> brokerReportedThrottle{false};
 char errorsTopic[96] = {};
 char throttleTopic[96] = {};
-std::string currentTopic;
-std::atomic<bool> currentSubscriptionFailed{false};
-bool retryCurrentSubscription = false;
-uint32_t lastCurrentSubscriptionRetryAt = 0;
+struct WeatherSubscription {
+  const char* type;
+  weatherkit_current::Group group;
+  std::string topic;
+  std::atomic<bool> failed{false};
+  bool retry = false;
+  uint32_t lastRetryAt = 0;
+
+  WeatherSubscription(const char* type, weatherkit_current::Group group)
+      : type(type), group(group) {}
+};
+WeatherSubscription weatherSubscriptions[] = {
+    {"current", weatherkit_current::Group::Current},
+    {"forecast_minutes_5", weatherkit_current::Group::Minutes5},
+    {"forecast_minutes_30", weatherkit_current::Group::Minutes30},
+    {"forecast_hours_1", weatherkit_current::Group::Hour1},
+};
 bool configured = false;
 bool clockSynchronized = false;
 bool clientStopped = false;
@@ -113,9 +126,11 @@ void onMqttEvent(void*, esp_event_base_t, int32_t eventId, void* eventData) {
       if (errorsId < 0 || throttleId < 0) {
         mqttError.store(-1);
       }
-      if (!currentTopic.empty() &&
-          esp_mqtt_client_subscribe(event->client, currentTopic.c_str(), 0) < 0) {
-        currentSubscriptionFailed.store(true);
+      for (WeatherSubscription& subscription : weatherSubscriptions) {
+        if (!subscription.topic.empty() &&
+            esp_mqtt_client_subscribe(event->client, subscription.topic.c_str(), 0) < 0) {
+          subscription.failed.store(true);
+        }
       }
       break;
     }
@@ -133,12 +148,18 @@ void onMqttEvent(void*, esp_event_base_t, int32_t eventId, void* eventData) {
         mqttError.store(-1);
       }
       break;
-    case MQTT_EVENT_DATA:
+    case MQTT_EVENT_DATA: {
+      weatherkit_current::Group group = weatherkit_current::Group::None;
+      for (const WeatherSubscription& subscription : weatherSubscriptions) {
+        if (!subscription.topic.empty() && event->topic_len > 0 &&
+            static_cast<size_t>(event->topic_len) == subscription.topic.size() &&
+            memcmp(event->topic, subscription.topic.data(), subscription.topic.size()) == 0) {
+          group = subscription.group;
+          break;
+        }
+      }
       weatherkit_current::receive(
-          !currentTopic.empty() && event->topic_len > 0 &&
-              static_cast<size_t>(event->topic_len) == currentTopic.size() &&
-              memcmp(event->topic, currentTopic.data(), currentTopic.size()) == 0,
-          event->data, static_cast<size_t>(event->data_len),
+          group, event->data, static_cast<size_t>(event->data_len),
           static_cast<size_t>(event->current_data_offset),
           static_cast<size_t>(event->total_data_len));
       if (event->current_data_offset == 0 && event->topic_len > 0) {
@@ -153,6 +174,7 @@ void onMqttEvent(void*, esp_event_base_t, int32_t eventId, void* eventData) {
         }
       }
       break;
+    }
     default:
       break;
   }
@@ -315,11 +337,13 @@ void begin() {
   snprintf(errorsTopic, sizeof(errorsTopic), "%s/errors", AIO_USERNAME);
   snprintf(throttleTopic, sizeof(throttleTopic), "%s/throttle", AIO_USERNAME);
   if (AIO_WEATHER_LOCATION_ID[0]) {
-    currentTopic = std::string(AIO_USERNAME) + "/integration/weather/" +
-                   AIO_WEATHER_LOCATION_ID + "/current";
-    Serial.println("WeatherKit: current enabled; first data waits for next MQTT push");
+    for (WeatherSubscription& subscription : weatherSubscriptions) {
+      subscription.topic = std::string(AIO_USERNAME) + "/integration/weather/" +
+                           AIO_WEATHER_LOCATION_ID + "/" + subscription.type;
+    }
+    Serial.println("WeatherKit: current, m5, m30, hour1 enabled; first data waits for next MQTT push");
   } else {
-    Serial.println("WeatherKit: current disabled; configure AIO_WEATHER_LOCATION_ID");
+    Serial.println("WeatherKit: disabled; configure AIO_WEATHER_LOCATION_ID");
   }
 }
 
@@ -348,20 +372,22 @@ void update(bool wifiConnected, bool timeSynchronized, uint32_t now) {
   }
 
   const int error = mqttError.exchange(0);
-  if (currentSubscriptionFailed.exchange(false)) {
-    Serial.println("WeatherKit current ERROR: MQTT subscription enqueue failed; "
-                   "retrying in 15 seconds");
-    retryCurrentSubscription = true;
-    lastCurrentSubscriptionRetryAt = now;
-  }
-  if (retryCurrentSubscription && connected &&
-      now - lastCurrentSubscriptionRetryAt >= kMqttStartRetryMs) {
-    lastCurrentSubscriptionRetryAt = now;
-    if (esp_mqtt_client_subscribe(client, currentTopic.c_str(), 0) >= 0) {
-      retryCurrentSubscription = false;
-      Serial.println("WeatherKit current: subscription retry queued");
-    } else {
-      Serial.println("WeatherKit current ERROR: subscription retry failed");
+  for (WeatherSubscription& subscription : weatherSubscriptions) {
+    if (subscription.failed.exchange(false)) {
+      Serial.printf("WeatherKit %s ERROR: MQTT subscription enqueue failed; "
+                    "retrying in 15 seconds\n", subscription.type);
+      subscription.retry = true;
+      subscription.lastRetryAt = now;
+    }
+    if (subscription.retry && connected &&
+        now - subscription.lastRetryAt >= kMqttStartRetryMs) {
+      subscription.lastRetryAt = now;
+      if (esp_mqtt_client_subscribe(client, subscription.topic.c_str(), 0) >= 0) {
+        subscription.retry = false;
+        Serial.printf("WeatherKit %s: subscription retry queued\n", subscription.type);
+      } else {
+        Serial.printf("WeatherKit %s ERROR: subscription retry failed\n", subscription.type);
+      }
     }
   }
   if (error != 0) {

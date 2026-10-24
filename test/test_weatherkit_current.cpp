@@ -6,6 +6,8 @@
 TestSerial Serial;
 namespace {
 std::map<std::string, std::string> submitted;
+std::string submittedGroup;
+std::string expectedGroup = "WeatherKit current";
 size_t submissions = 0;
 bool acceptGroup = true;
 const char payload[] = R"JSON({
@@ -31,23 +33,28 @@ void reset() {
   lastRetryAt = 0;
   submissions = 0;
   submitted.clear();
+  submittedGroup.clear();
+  expectedGroup = "WeatherKit current";
   acceptGroup = true;
   Serial.output.clear();
 }
 
-void deliver(const std::string& text) {
-  weatherkit_current::receive(true, text.data(), text.size(), 0, text.size());
+void deliver(const std::string& text,
+             weatherkit_current::Group group = weatherkit_current::Group::Current) {
+  weatherkit_current::receive(group,
+                             text.data(), text.size(), 0, text.size());
 }
 }
 
 namespace aio_publisher {
 bool enqueueGroup(const char* name, const FeedSample* samples, size_t count) {
-  assert(std::string(name) == "WeatherKit current");
+  assert(std::string(name) == expectedGroup);
   ++submissions;
   if (!acceptGroup) {
     return false;
   }
   submitted.clear();
+  submittedGroup = name;
   for (size_t i = 0; i < count; ++i) {
     assert(submitted.emplace(samples[i].key, samples[i].value).second);
   }
@@ -59,10 +66,10 @@ int main() {
   using namespace weatherkit_current;
   reset();
   const size_t length = strlen(payload);
-  receive(true, payload, 17, 0, length);
+  receive(Group::Current, payload, 17, 0, length);
   update(0);
   assert(submissions == 0);
-  receive(false, payload + 17, length - 17, 17, length);
+  receive(Group::None, payload + 17, length - 17, 17, length);
   update(1);
   assert(submissions == 1 && submitted.size() == 20);
   assert(submitted.at("currentasof") == "2026-10-24T15:00:00Z");
@@ -111,18 +118,18 @@ int main() {
   }
 
   reset();
-  receive(false, payload, length, 0, length);
+  receive(Group::None, payload, length, 0, length);
   update(0);
   assert(submissions == 0);
-  receive(true, payload, 17, 0, length);
-  receive(false, payload + 18, length - 18, 18, length);
+  receive(Group::Current, payload, 17, 0, length);
+  receive(Group::None, payload + 18, length - 18, 18, length);
   update(1);
   assert(submissions == 0 && Serial.output.find("discarded") != std::string::npos);
 
   reset();
-  receive(true, payload, 17, 0, length);
+  receive(Group::Current, payload, 17, 0, length);
   disconnected();
-  receive(false, payload + 17, length - 17, 17, length);
+  receive(Group::None, payload + 17, length - 17, 17, length);
   update(0);
   assert(submissions == 0 && Serial.output.find("discarded") != std::string::npos);
   deliver(payload);
@@ -180,5 +187,98 @@ int main() {
   assert(selected.empty());
   assert(Serial.output.find("no output feeds enabled") != std::string::npos);
 
-  puts("WeatherKit current tests passed.");
+  const std::string minutePayload =
+      R"({"startTime":"2026-10-24T16:45:00Z","precipitationChance":0.65,"precipitationIntensity":0.25})";
+  for (const Group group : {Group::Minutes5, Group::Minutes30}) {
+    reset();
+    expectedGroup = group == Group::Minutes5 ? "WeatherKit m5" : "WeatherKit m30";
+    const std::string prefix = group == Group::Minutes5 ? "m5" : "m30";
+    receive(group, minutePayload.data(), 12, 0, minutePayload.size());
+    receive(Group::None, minutePayload.data() + 12, minutePayload.size() - 12,
+            12, minutePayload.size());
+    update(0);
+    assert(submitted.size() == 3);
+    assert(submitted.at(prefix + "starttime") == "2026-10-24T16:45:00Z");
+    assert(submitted.at(prefix + "precipitationchance") == "65");
+    assert(submitted.at(prefix + "precipitationintensity") == "0.25");
+    assert(submittedGroup == expectedGroup);
+
+    submitted.clear();
+    deliver(R"({"precipitationChance":0,"precipitationIntensity":0})", group);
+    update(1);
+    assert(submitted.size() == 2);
+    assert(submitted.at(prefix + "precipitationchance") == "0");
+    assert(submitted.at(prefix + "precipitationintensity") == "0");
+
+    const size_t beforeInvalid = submissions;
+    deliver(R"({"startTime":null,"precipitationChance":1.1,"precipitationIntensity":-1})", group);
+    update(2);
+    assert(submissions == beforeInvalid);
+    deliver(R"({"precipitationChance":"0.5","precipitationIntensity":false})", group);
+    update(3);
+    assert(submissions == beforeInvalid);
+    deliver("{bad", group);
+    update(4);
+    assert(submissions == beforeInvalid);
+  }
+
+  reset();
+  expectedGroup = "WeatherKit m5";
+  acceptGroup = false;
+  deliver(minutePayload, Group::Minutes5);
+  update(0);
+  deliver(minutePayload, Group::Minutes30);
+  deliver(payload);
+  assert(incoming.size() == 2);
+  acceptGroup = true;
+  update(2000);
+  assert(submittedGroup == "WeatherKit m5" && submitted.size() == 3);
+  expectedGroup = "WeatherKit m30";
+  update(2001);
+  assert(submittedGroup == "WeatherKit m30" && submitted.size() == 3);
+  expectedGroup = "WeatherKit current";
+  update(2002);
+  assert(submittedGroup == "WeatherKit current" && submitted.size() == 20);
+
+  reset();
+  expectedGroup = "WeatherKit hour1";
+  const std::string hourly = R"({
+    "forecastStart":"2026-10-24T18:00:00Z","cloudCover":0.25,
+    "conditionCode":"Clear","daylight":true,"humidity":0.65,
+    "precipitationAmount":0,"precipitationChance":0.5,
+    "precipitationType":"rain","precipitationIntensity":0,
+    "pressure":1013.25,"pressureTrend":"steady",
+    "snowfallIntensity":0,"snowfallAmount":0,
+    "temperature":20,"temperatureApparent":19,"temperatureDewPoint":10,
+    "uvIndex":3,"visibility":16093.44,"windDirection":225,
+    "windGust":32.18688,"windSpeed":16.09344
+  })";
+  receive(Group::Hour1, hourly.data(), 11, 0, hourly.size());
+  receive(Group::None, hourly.data() + 11, hourly.size() - 11, 11, hourly.size());
+  update(0);
+  const std::map<std::string, std::string> expectedHourly = {
+      {"hours1start", "2026-10-24T18:00:00Z"},
+      {"hours1cloudcover", "25"}, {"hours1conditioncode", "Clear"},
+      {"hours1daylight", "It will be light"}, {"hours1humidity", "65"},
+      {"hours1precipitationamount", "0"}, {"hours1precipitationchance", "50"},
+      {"hours1precipitationtype", "rain"}, {"hours1precipitationintensity", "0"},
+      {"hours1pressure", "1013.25"}, {"hours1pressuretrend", "steady"},
+      {"hours1snowfallintensity", "0"}, {"hours1snowfallamount", "0"},
+      {"hours1temperature", "68.0"}, {"hours1temperatureapparent", "66.2"},
+      {"hours1temperaturedewpoint", "50.0"}, {"hours1uvindex", "3"},
+      {"hours1visibility", "16093.44"}, {"hours1winddirection", "SW"},
+      {"hours1windgust", "20"}, {"hours1windspeed", "10"}};
+  assert(submitted == expectedHourly);
+  deliver(R"({"daylight":false,"temperature":-10,"snowfallAmount":0})", Group::Hour1);
+  update(1);
+  assert(submitted.size() == 3);
+  assert(submitted.at("hours1daylight") == "It will be dark");
+  assert(submitted.at("hours1temperature") == "14.0");
+  const size_t hourlySubmissions = submissions;
+  deliver(R"({"daylight":1,"precipitationChance":2,"snowfallAmount":-1,
+              "visibility":-1,"forecastStart":null})", Group::Hour1);
+  update(2);
+  assert(submissions == hourlySubmissions);
+
+  puts("WeatherKit current, minute, and hour1 tests passed.");
 }

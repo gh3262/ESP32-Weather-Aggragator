@@ -38,6 +38,7 @@ struct Sent {
   int id;
 };
 std::vector<Sent> sent;
+std::vector<std::string> subscribedTopics;
 uint32_t clockMs = 0;
 int nextId = 1;
 int stops = 0;
@@ -73,9 +74,11 @@ void reset(uint32_t now = 0) {
   mqttError = 0;
   brokerReportedError = false;
   brokerReportedThrottle = false;
-  currentSubscriptionFailed = false;
-  retryCurrentSubscription = false;
-  lastCurrentSubscriptionRetryAt = 0;
+  for (auto& subscription : weatherSubscriptions) {
+    subscription.failed = false;
+    subscription.retry = false;
+    subscription.lastRetryAt = 0;
+  }
   weatherkit_current::incoming.clear();
   weatherkit_current::assembly.clear();
   weatherkit_current::assembling = false;
@@ -93,6 +96,7 @@ void reset(uint32_t now = 0) {
   lastPublishAt = 0;
   lastStartAttemptAt = 0;
   sent.clear();
+  subscribedTopics.clear();
   nextId = 1;
   stops = destroys = subscriptionCalls = 0;
   rejectPublish = rejectSubscription = rejectStop = rejectDestroy = false;
@@ -130,8 +134,9 @@ esp_err_t esp_mqtt_client_destroy(esp_mqtt_client_handle_t) {
   ++destroys;
   return rejectDestroy ? -1 : ESP_OK;
 }
-int esp_mqtt_client_subscribe(esp_mqtt_client_handle_t, const char*, int) {
+int esp_mqtt_client_subscribe(esp_mqtt_client_handle_t, const char* topic, int) {
   ++subscriptionCalls;
+  subscribedTopics.push_back(topic);
   return rejectSubscription ? -1 : nextId++;
 }
 int esp_mqtt_client_enqueue(esp_mqtt_client_handle_t, const char* topic,
@@ -159,6 +164,15 @@ int main() {
   assert(client == nullptr);
 
   reset();
+  assert(subscribedTopics.size() == 6);
+  assert(subscribedTopics[2] ==
+         "test-user/integration/weather/test-location/current");
+  assert(subscribedTopics[3] ==
+         "test-user/integration/weather/test-location/forecast_minutes_5");
+  assert(subscribedTopics[4] ==
+         "test-user/integration/weather/test-location/forecast_minutes_30");
+  assert(subscribedTopics[5] ==
+         "test-user/integration/weather/test-location/forecast_hours_1");
   assert(enqueueGroup("current", samples, 2));
   tick(1999);
   assert(sent.empty());
@@ -217,6 +231,7 @@ int main() {
   tick(2001);
   event(MQTT_EVENT_CONNECTED);
   tick(4000);
+  assert(subscribedTopics.size() == 12);
   assert(sent.size() == 1 && outstandingMessageId == originalId);
   event(MQTT_EVENT_PUBLISHED, originalId);
   tick(4001);
@@ -290,13 +305,17 @@ int main() {
   rejectSubscription = true;
   subscriptionCalls = 0;
   event(MQTT_EVENT_CONNECTED);
-  assert(subscriptionCalls == 3);
+  assert(subscriptionCalls == 6);
   tick(1);
   assert(Serial.output.find("subscription failed") != std::string::npos);
-  assert(retryCurrentSubscription);
+  for (const auto& subscription : weatherSubscriptions) {
+    assert(subscription.retry);
+  }
   rejectSubscription = false;
   tick(15001);
-  assert(!retryCurrentSubscription);
+  for (const auto& subscription : weatherSubscriptions) {
+    assert(!subscription.retry);
+  }
 
   reset();
   pending.clear();
@@ -447,8 +466,8 @@ int main() {
       R"({"temperature":20,"humidity":0.65,"windDirection":225})";
   esp_mqtt_event_t message = {};
   message.client = &fakeClient;
-  message.topic = &currentTopic[0];
-  message.topic_len = static_cast<int>(currentTopic.size());
+  message.topic = &weatherSubscriptions[0].topic[0];
+  message.topic_len = static_cast<int>(weatherSubscriptions[0].topic.size());
   std::string part = currentJson.substr(0, 10);
   message.data = &part[0];
   message.data_len = static_cast<int>(part.size());
@@ -477,7 +496,8 @@ int main() {
   assert(sent[3].topic == "test-user/feeds/currentwinddirection" && sent[3].value == "SW");
   assert(sent[4].value ==
          "20261024110442 Sent feed group WeatherKit current - Number Updated: 4");
-  weatherkit_current::receive(true, currentJson.data(), currentJson.size(), 0,
+  weatherkit_current::receive(weatherkit_current::Group::Current,
+                             currentJson.data(), currentJson.size(), 0,
                              currentJson.size());
   tick(12000);
   assert(sent.size() == 5 && pending.empty());
@@ -497,6 +517,82 @@ int main() {
   tick(2001);
   tick(4000);
   assert(sent.back().value == "20261024110442 after NTP");
+
+  reset();
+  pending.clear();
+  pendingLogs.clear();
+  auto minuteEvent = [&](size_t subscriptionIndex, std::string json) {
+    esp_mqtt_event_t data = {};
+    data.client = &fakeClient;
+    data.topic = &weatherSubscriptions[subscriptionIndex].topic[0];
+    data.topic_len = static_cast<int>(weatherSubscriptions[subscriptionIndex].topic.size());
+    data.data = &json[0];
+    data.data_len = static_cast<int>(json.size());
+    data.total_data_len = data.data_len;
+    callback(nullptr, nullptr, MQTT_EVENT_DATA, &data);
+  };
+  const std::string minuteJson =
+      R"({"startTime":"2026-10-24T16:45:00Z","precipitationChance":0.5,"precipitationIntensity":0})";
+  minuteEvent(1, minuteJson);
+  minuteEvent(2, minuteJson);
+  tick(1);
+  tick(2);
+  assert(pending.size() == 6);
+  for (uint32_t now = 2000; now <= 16000; now += 2000) {
+    tick(now);
+    acknowledge();
+    tick(now + 1);
+  }
+  assert(sent.size() == 8);
+  assert(sent[0].topic == "test-user/feeds/m5starttime");
+  assert(sent[1].topic == "test-user/feeds/m5precipitationchance" &&
+         sent[1].value == "50");
+  assert(sent[2].topic == "test-user/feeds/m5precipitationintensity" &&
+         sent[2].value == "0");
+  assert(sent[3].topic == "test-user/feeds/m30starttime");
+  assert(sent[4].topic == "test-user/feeds/m30precipitationchance");
+  assert(sent[5].topic == "test-user/feeds/m30precipitationintensity");
+  assert(sent[6].value ==
+         "20261024110442 Sent feed group WeatherKit m5 - Number Updated: 3");
+  assert(sent[7].value ==
+         "20261024110442 Sent feed group WeatherKit m30 - Number Updated: 3");
+  minuteEvent(1, minuteJson);
+  minuteEvent(2, minuteJson);
+  tick(16002);
+  tick(16003);
+  assert(pending.empty() && pendingLogs.empty() && sent.size() == 8);
+  minuteEvent(1, R"({"startTime":"2026-10-24T16:45:00Z","precipitationChance":0.75,"precipitationIntensity":0})");
+  tick(16004);
+  assert(pending.size() == 1 && pending.front().value == "75");
+  tick(18000);
+  acknowledge();
+  tick(18001);
+  tick(20000);
+  assert(sent.back().value ==
+         "20261024110442 Sent feed group WeatherKit m5 - Number Updated: 1");
+
+  reset();
+  pending.clear();
+  pendingLogs.clear();
+  minuteEvent(3, R"({"forecastStart":"2026-10-24T18:00:00Z","daylight":false,
+                   "visibility":10000,"temperature":20})");
+  tick(1);
+  assert(pending.size() == 4);
+  for (uint32_t now = 2000; now <= 10000; now += 2000) {
+    tick(now);
+    acknowledge();
+    tick(now + 1);
+  }
+  assert(sent[0].topic == "test-user/feeds/hours1start");
+  assert(sent[1].value == "It will be dark");
+  assert(sent[2].value == "68.0");
+  assert(sent[3].value == "10000");
+  assert(sent[4].value ==
+         "20261024110442 Sent feed group WeatherKit hour1 - Number Updated: 4");
+  minuteEvent(3, R"({"forecastStart":"2026-10-24T18:00:00Z","daylight":false,
+                   "visibility":10000,"temperature":20})");
+  tick(10002);
+  assert(pending.empty() && pendingLogs.empty() && sent.size() == 5);
 
   puts("AIO publisher tests passed.");
 }
