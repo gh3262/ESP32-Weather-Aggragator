@@ -2,6 +2,7 @@
 #define AIO_PUBLISHER_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 namespace aio_publisher {
 
@@ -11,7 +12,7 @@ struct FeedSample {
 };
 
 void begin();
-void update(bool wifiConnected, bool timeSynchronized, unsigned long now);
+void update(bool wifiConnected, bool timeSynchronized, uint32_t now);
 bool enqueueGroup(const char* groupName, const FeedSample* samples,
                   size_t sampleCount);
 

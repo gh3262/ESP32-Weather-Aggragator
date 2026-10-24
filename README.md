@@ -60,11 +60,24 @@ samples are wired into it yet.
 The application starts its TLS-verified MQTT connection after Wi-Fi and NTP are
 ready. Feed samples are submitted in named groups; the queue publishes one
 sample at a time, waits for its QoS 1 acknowledgement, and spaces publish
-attempts by at least two seconds. This caps application traffic at 30 publishes
+attempts by at least two seconds. This caps new application publishes at 30
 per minute, including entries sent to `aggregator.log`, leaving account
-capacity for other feeds. The queue is bounded and rejects new groups when it
+capacity for other feeds. MQTT's QoS 1 retransmissions can repeat a publish
+after a connection failure; they are not new application queue entries.
+The queue is bounded and rejects new groups when it
 cannot accept them; callers must report that result rather than silently losing
 updates.
+
+The MQTT client retains ownership of an outstanding message across reconnects;
+the application does not enqueue another copy on disconnect. If no
+acknowledgement arrives within 30 seconds, the application stops and destroys
+the client (clearing its old outbox) before reconnecting and retrying the
+uncompleted sample. QoS 1 is at-least-once delivery, not exactly-once: if the
+broker stored a value but its acknowledgement was lost, retrying can create a
+duplicate data point. Group success means every sample received a broker
+acknowledgement, not that the group was atomic or that Adafruit IO performed
+application-level validation. Account error/throttle notices are reported on
+serial.
 
 After every sample in a group is acknowledged, one concise success entry for
 the group is queued to `aggregator.log` (the replacement for the old `rt` log
@@ -192,7 +205,8 @@ pio run -e seeed_xiao_esp32s3 --target upload
 The `weatherkit_mqtt_diagnostic` environment compiles only
 [weatherkit_mqtt_diagnostic.cpp](src/weatherkit_mqtt_diagnostic.cpp). It is a
 long-running observation tool for the planned WeatherKit MQTT source, with no
-display, NeoPixel, or publishing. It requires `AIO_USERNAME`, `AIO_KEY`,
+display or NeoPixel. It publishes compact summaries to `aggregator.diag`.
+It requires `AIO_USERNAME`, `AIO_KEY`,
 `AIO_WEATHER_LOCATION_ID` (the Power-Up location ID), and at least one Wi-Fi
 network in `include/credentials.h`.
 
@@ -234,6 +248,19 @@ commands: `s` prints the summary now, `p` prints the latest payloads, `v`
 toggles full payload logging for every message, `r` unsubscribes and
 resubscribes to measure initial delivery again, and `?` repeats the help.
 The Adafruit IO key and Wi-Fi passwords are never logged.
+
+Each automatic 30-minute summary and manual `s` summary also queues one entry
+to `aggregator.diag`, capped at 1024 bytes. Create this feed before running the
+diagnostic. Entries include local time, uptime, MQTT connect/disconnect/error
+counts, RSSI, current/minimum heap, and per-topic message/change/retained counts,
+maximum payload bytes, average interval seconds, and seconds since last receipt.
+Topic labels are `cur`, `min5`/`min30`, `hr1`/`hr2`/`hr6`/`hr24`, and
+`day1`/`day2`/`day5`. Detailed field changes and full payloads remain serial-only.
+Summary publishes use QoS 1 and are paced at least two seconds apart; serial
+reports enqueue failures and MQTT acknowledgements. If disconnected, the latest
+unsent snapshot waits for reconnection; a newer snapshot replaces it with an
+explicit serial notice. RAM-only pending data is lost on reset, but entries
+already delivered to Adafruit IO remain in the feed.
 
 Questions to answer from a multi-hour run:
 
@@ -331,6 +358,28 @@ command with `test\test_wifi_retry.cpp` and a separate output executable.
 They check the failure threshold, independent saved-network counters, successful
 connection reset, exact cooldown boundary, timer wraparound, strongest-SSID
 ranking, multiple satellite observations, and fallback when networks cool down.
+
+[Diagnostic summary tests](test/test_diagnostic_summary.cpp) also use that host
+command with a separate output executable. They check the compact field layout,
+missing-data markers, all ten topics at maximum counter values within 1024
+bytes, and explicit rejection of oversized output rather than publishing a
+truncated summary.
+
+[Publisher tests](test/test_aio_publisher.cpp) compile the production publisher
+against a small fake MQTT/serial transport with dummy credentials, without
+accessing the network or using real account credentials:
+
+```powershell
+& "$env:USERPROFILE\.platformio\penv\Scripts\python.exe" -m ziglang c++ -std=c++11 -Wall -Wextra -Werror -pedantic -Itest\support -Iinclude test\test_aio_publisher.cpp -o .pio\host-tests\aio_publisher.exe
+if ($LASTEXITCODE -eq 0) { & .\.pio\host-tests\aio_publisher.exe }
+```
+
+They check the two-second boundary, rolling 60-second windows shared by weather
+and logs, group completion only after acknowledgements, unrelated message IDs,
+reconnect ownership, timeout recovery and cleanup failures, enqueue failures,
+atomic rejection of invalid/full groups, network/time startup gating, and
+32-bit timer wraparound. These tests do not verify real broker delivery or TLS;
+that still requires an on-board run.
 
 ## Wiring
 

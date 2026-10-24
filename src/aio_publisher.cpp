@@ -73,6 +73,7 @@ std::atomic<bool> brokerReportedThrottle{false};
 char errorsTopic[96] = {};
 char throttleTopic[96] = {};
 bool configured = false;
+bool clientStopped = false;
 bool startAttempted = false;
 bool lastConnectionState = false;
 int outstandingMessageId = 0;
@@ -84,13 +85,16 @@ void onMqttEvent(void*, esp_event_base_t, int32_t eventId, void* eventData) {
   const esp_mqtt_event_handle_t event =
       static_cast<esp_mqtt_event_handle_t>(eventData);
   switch (static_cast<esp_mqtt_event_id_t>(eventId)) {
-    case MQTT_EVENT_CONNECTED:
+    case MQTT_EVENT_CONNECTED: {
       mqttConnected.store(true);
-      if (esp_mqtt_client_subscribe(event->client, errorsTopic, 0) < 0 ||
-          esp_mqtt_client_subscribe(event->client, throttleTopic, 0) < 0) {
+      const int errorsId = esp_mqtt_client_subscribe(event->client, errorsTopic, 0);
+      const int throttleId =
+          esp_mqtt_client_subscribe(event->client, throttleTopic, 0);
+      if (errorsId < 0 || throttleId < 0) {
         mqttError.store(-1);
       }
       break;
+    }
     case MQTT_EVENT_DISCONNECTED:
       mqttConnected.store(false);
       break;
@@ -193,6 +197,31 @@ bool startClient() {
   return true;
 }
 
+bool resetClient() {
+  // Clear the MQTT-owned QoS 1 outbox before resubmitting the application head.
+  if (!clientStopped) {
+    const esp_err_t stopped = esp_mqtt_client_stop(client);
+    if (stopped != ESP_OK) {
+      Serial.printf("AIO ERROR: unable to stop timed-out MQTT client: %s\n",
+                    esp_err_to_name(stopped));
+      return false;
+    }
+    clientStopped = true;
+  }
+  const esp_err_t destroyed = esp_mqtt_client_destroy(client);
+  if (destroyed != ESP_OK) {
+    Serial.printf("AIO ERROR: unable to destroy timed-out MQTT client: %s\n",
+                  esp_err_to_name(destroyed));
+    return false;
+  }
+  client = nullptr;
+  clientStopped = false;
+  mqttConnected.store(false);
+  acknowledgedMessageId.store(0);
+  outstandingMessageId = 0;
+  return true;
+}
+
 void completePublish() {
   if (pending.empty()) {
     outstandingMessageId = 0;
@@ -241,7 +270,7 @@ void begin() {
   snprintf(throttleTopic, sizeof(throttleTopic), "%s/throttle", AIO_USERNAME);
 }
 
-void update(bool wifiConnected, bool timeSynchronized, unsigned long now) {
+void update(bool wifiConnected, bool timeSynchronized, uint32_t now) {
   if (!configured) {
     return;
   }
@@ -260,8 +289,6 @@ void update(bool wifiConnected, bool timeSynchronized, unsigned long now) {
       queueMqttLog("MQTT connected");
     } else {
       queueMqttLog("MQTT disconnected");
-      outstandingMessageId = 0;
-      acknowledgedMessageId.store(0);
     }
   }
 
@@ -289,15 +316,21 @@ void update(bool wifiConnected, bool timeSynchronized, unsigned long now) {
 
   if (outstandingMessageId != 0 &&
       now - outstandingAt >= kPublishTimeoutMs) {
-    Serial.println("AIO ERROR: publish acknowledgement timed out; retrying");
-    if (!pending.empty() && !pending.front().isLog) {
+    Serial.println("AIO ERROR: publish acknowledgement timed out; resetting MQTT");
+    if (!pending.empty() && !pending.front().isLog &&
+        !pending.front().failureLogged) {
       queueLog("Publish acknowledgement timed out; retrying");
+      pending.front().failureLogged = true;
     }
-    outstandingMessageId = 0;
+    if (!resetClient()) {
+      outstandingAt = static_cast<uint32_t>(now);
+    }
+    return;
   }
 
   promoteLog();
-  if (!connected || pending.empty() || outstandingMessageId != 0 ||
+  if (!wifiConnected || !connected || pending.empty() ||
+      outstandingMessageId != 0 ||
       now - lastPublishAt < kPublishIntervalMs) {
     return;
   }

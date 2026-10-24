@@ -15,6 +15,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include "diagnostic_summary.h"
 
 #if __has_include("credentials.h")
 #include "credentials.h"
@@ -32,6 +33,7 @@ constexpr uint32_t kWifiAttemptMs = 20000;
 constexpr uint32_t kTimeWaitLogMs = 15000;
 constexpr uint32_t kSummaryIntervalMs = 30UL * 60UL * 1000UL;
 constexpr uint32_t kConfigReminderMs = 30000;
+constexpr uint32_t kDiagPublishIntervalMs = 2000;
 constexpr size_t kMaxStoredPayload = 16384;
 constexpr size_t kSerialTxBuffer = 16384;
 constexpr size_t kMaxPendingLogBytes = 65536;
@@ -114,6 +116,9 @@ struct Assembly {
 TopicStats topics[kTopicCount];
 char errorsTopic[96] = {};
 char throttleTopic[96] = {};
+std::string diagnosticTopic;
+std::string pendingSummary;
+uint32_t lastDiagPublishAt = 0;
 Assembly assembly;
 
 // Guards statistics shared between the MQTT task and loop(). Never call
@@ -300,6 +305,7 @@ void printHelp() {
   Serial.println("Subscribes to all 10 WeatherKit Power-Up topics and logs every message.");
   Serial.println("Commands: s = summary, p = print latest payloads, v = toggle full payload");
   Serial.println("logging, r = resubscribe (tests initial delivery), ? = help.");
+  Serial.println("Summaries also go to aggregator.diag (at most 1024 bytes).");
   Serial.println("The Adafruit IO key and Wi-Fi passwords are never logged.");
 }
 
@@ -360,6 +366,53 @@ void printSummary() {
     }
     Serial.println();
   }
+
+  // Called with statsLock held; defer MQTT API calls to loop() to avoid lock inversion.
+  diagnostic_summary::Topic snapshot[kTopicCount];
+  const char* const names[] = {
+      "cur", "min5", "min30", "hr1", "hr2", "hr6", "hr24", "day1", "day2", "day5"};
+  static_assert(sizeof(names) / sizeof(names[0]) == kTopicCount,
+                "Each WeatherKit topic needs a diagnostic label");
+  for (size_t i = 0; i < kTopicCount; ++i) {
+    const TopicStats& stats = topics[i];
+    snapshot[i] = {
+        names[i], stats.count, stats.changes, stats.retained,
+        static_cast<uint32_t>(stats.maxSize),
+        stats.intervalCount
+            ? static_cast<uint32_t>(stats.intervalSumMs / stats.intervalCount / 1000)
+            : 0,
+        (now - stats.lastRxAt) / 1000};
+  }
+  const diagnostic_summary::Status status = {
+      stamp, mqttConnected.load(), mqttConnects, mqttDisconnects, mqttErrors,
+      WiFi.RSSI(), ESP.getFreeHeap(), ESP.getMinFreeHeap()};
+  char summary[diagnostic_summary::kMaxBytes + 1];
+  if (!diagnostic_summary::format(summary, status, snapshot, kTopicCount)) {
+    Serial.println("ERROR: diagnostic summary exceeds 1024 bytes; not published.");
+    return;
+  }
+  if (!pendingSummary.empty()) {
+    Serial.println("Diagnostic feed: replacing unsent summary with latest snapshot.");
+  }
+  pendingSummary = summary;
+}
+
+void publishSummary(uint32_t now) {
+  if (pendingSummary.empty() || !mqttConnected.load() ||
+      now - lastDiagPublishAt < kDiagPublishIntervalMs) {
+    return;
+  }
+  lastDiagPublishAt = now;
+  const int id = esp_mqtt_client_enqueue(
+      client, diagnosticTopic.c_str(), pendingSummary.c_str(),
+      static_cast<int>(pendingSummary.size()), 1, 0, true);
+  if (id < 0) {
+    Serial.println("ERROR: aggregator.diag enqueue failed; will retry.");
+    return;
+  }
+  Serial.printf("Diagnostic feed: queued %u bytes to aggregator.diag (msg_id=%d).\n",
+                static_cast<unsigned>(pendingSummary.size()), id);
+  pendingSummary.clear();
 }
 
 void printPayloads() {
@@ -575,6 +628,10 @@ void onMqttEvent(void*, esp_event_base_t, int32_t eventId, void* eventData) {
         queueLogf("SUBACK msg_id=%d\n", event->msg_id);
       }
       break;
+    case MQTT_EVENT_PUBLISHED:
+      queueLogf("Diagnostic feed: MQTT acknowledged summary msg_id=%d.\n",
+                event->msg_id);
+      break;
     case MQTT_EVENT_ERROR:
       ++mqttErrors;
       formatStamp(stamp, sizeof(stamp));
@@ -745,6 +802,7 @@ void setup() {
   }
   snprintf(errorsTopic, sizeof(errorsTopic), "%s/errors", AIO_USERNAME);
   snprintf(throttleTopic, sizeof(throttleTopic), "%s/throttle", AIO_USERNAME);
+  diagnosticTopic = std::string(AIO_USERNAME) + "/feeds/aggregator.diag";
 
   configured = AIO_USERNAME[0] && AIO_KEY[0] && AIO_WEATHER_LOCATION_ID[0] &&
                hasWifiNetwork();
@@ -777,5 +835,6 @@ void loop() {
     std::lock_guard<std::mutex> guard(statsLock);
     printSummary();
   }
+  publishSummary(now);
   delay(10);
 }
