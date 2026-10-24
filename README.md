@@ -50,9 +50,9 @@ PlatformIO/Arduino firmware for a Seeed Studio XIAO ESP32-S3 with an Adafruit
   Enabled using `kEnableStatusPixels = true`; set it to `false` to isolate
   pixel initialization and updates during Wi-Fi diagnostics.
 
-Weather collection and feed adapters are not implemented yet. The main firmware
-now has the Adafruit IO MQTT transport and paced publish queue; no weather
-samples are wired into it yet.
+The main firmware receives WeatherKit current conditions through Adafruit IO
+MQTT and publishes changed values through the shared paced queue. Other
+providers and minute/hourly/daily forecast adapters are not implemented yet.
 [The feed catalog](WEATHER_FEED_CATALOG.csv) remains the migration reference.
 
 ### Adafruit IO publishing foundation
@@ -86,6 +86,17 @@ possible. Detailed development and status output remains on USB serial and is
 not forwarded to the log feed. Weather-group selection, failure retry policy,
 and log message format can be refined as provider groups are added. Create the
 `aggregator.log` feed in Adafruit IO before enabling publishing.
+
+Every operational log-feed value starts with local event time in
+`YYYYMMDDHHMMSS` format followed by a space, for example
+`20261024110442 Sent feed group WeatherKit current - Number Updated: 7`.
+The count is changed updates queued and acknowledged for that group, excluding
+unchanged samples, log entries, and transport retries. Repeated transitions to
+the same feed within one group count as separate updates.
+The prefix uses the
+NTP-synchronized clock and configured timezone/DST rules when the event enters
+the log queue, not when it is eventually published. Events before synchronization
+use `TIME_UNSYNCED` instead. Detailed serial messages are unchanged.
 
 ### Change detection
 
@@ -132,16 +143,92 @@ publisher-test:1:A
 The duplicate A is suppressed, while the return from B to A is preserved.
 Verify the entries' timestamps are at least two seconds apart (other queued
 traffic may increase the gap), then check `aggregator.log` for
-`Sent feed group publisher-test`. Acceptance on serial means queued, not yet
+`Sent feed group publisher-test - Number Updated: 3`.
+Acceptance on serial means queued, not yet
 delivered; completion is logged only after MQTT acknowledges all three samples.
 QoS 1 recovery can duplicate data points after lost acknowledgements, as noted
 above. Repeating `t` uses run 2, then run 3, so each run exercises all three
 publishes. The run counter resets on reboot. Send `?` to repeat command help.
 The test never runs automatically and does not write to real weather feeds.
 
+### WeatherKit current conditions
+
+With `AIO_USERNAME`, `AIO_KEY`, and `AIO_WEATHER_LOCATION_ID` configured, the
+main MQTT client subscribes to
+`{username}/integration/weather/{location_id}/current` on every connection.
+An empty location ID disables only WeatherKit collection, not publishing.
+No HTTP startup fetch is performed: expect the first data at the next Power-Up
+push, usually within about a minute (occasionally a push is skipped).
+Stop the old current-condition feeder before uploading this replacement.
+
+#### Adding, disabling, or changing output feeds
+
+[feed_config.h](include/feed_config.h) is the compile-time source of truth for
+weather output mappings. The CSV catalog remains a historical migration
+inventory; editing it does not change firmware behavior.
+
+Each `weatherkitCurrent` row specifies `{enabled, source field, destination key,
+conversion}`. Set `enabled` to `false` to stop publishing an output, or remove
+its row. Add a row to publish another field in the current JSON object, using
+an existing conversion; a new conversion needs adapter code and tests.
+Changing a destination key redirects future values. Wind degrees and compass
+text are independent rows and can be enabled or disabled separately.
+All 20 existing outputs are enabled by default.
+
+Rebuild, run the adapter/publisher tests, and upload after a configuration
+change. The default-mapping assertions in the adapter tests intentionally
+describe the shipping configuration; update their expected keys/counts/values
+when changing that configuration. Disabled fields are neither validated nor
+queued. Disabling every output is a serial-reported no-op; it does not stop
+the current-topic subscription.
+
+Create and manage destination feeds in Adafruit IO separately before enabling
+their mappings. The firmware does not provision or delete feeds. Disabling or
+renaming an output leaves existing Adafruit IO feeds and their history intact.
+Changing mappings does not enable other source topics or add a provider.
+
+[weatherkit_current.cpp](src/weatherkit_current.cpp) maps the 20 existing
+`current*` destination feeds listed in the
+[catalog](WEATHER_FEED_CATALOG.md#22-current-and-minute-mappings).
+It preserves percent and whole-mile/mph truncation, Fahrenheit temperatures
+with one decimal, compass labels, `Its light`/`Its dark`, and raw pressure
+(hPa), precipitation intensity (mm/h), UV index, condition/trend, and `asOf`.
+Wind input is km/h, not m/s. Shared precise conversion factors replace the old
+approximate multipliers; exact unit boundaries can therefore differ from the
+old implementation. Temperatures use the shared round-half-away-from-zero
+helper rather than Python's tie-to-even rounding. Numeric conversions use
+ArduinoJson's canonical decimal text in double precision to avoid float32
+storage noise turning, for example, 65% humidity into a truncated 64%.
+
+Missing, null, wrong-type, or out-of-range fields are skipped with serial
+diagnostics, not replaced with artificial zeroes. Valid fields still publish;
+an entirely unusable message is rejected. Valid zeroes are preserved. Optional
+fields such as the altitude-specific cloud covers may be absent. Each push is
+filtered against queued/acknowledged values; an entirely unchanged push creates
+no publish or log-feed entry. A changed group completes with
+`Sent feed group WeatherKit current - Number Updated: n` in `aggregator.log`.
+Minute, hourly, and
+daily topics are not subscribed by this application yet.
+
+MQTT-task delivery assembles messages up to 4096 bytes, then hands complete
+snapshots to the main loop for parsing/publication. Up to four received
+snapshots wait behind one parsed snapshot; new arrivals beyond that limit are
+discarded with a serial error. Invalid/incomplete chunk sequences and oversize
+messages are likewise reported. If the publisher rejects a group, the parsed
+snapshot remains for retries every two seconds, preserving FIFO order.
+The source's `asOf` timestamp is published as a feed value, not used as an AIO
+historical timestamp. Source-age rejection and heartbeat policy are deferred.
+
+For the board check, upload the main environment, watch for
+`WeatherKit current: parsed ... valid feed samples`, and verify
+`currenttemperature`, `currenthumidity`, and the other available `current*`
+feeds. A full initial group of 20 feeds needs roughly 40 seconds to drain,
+plus queued logs. Subsequent unchanged pushes should show
+`feed group WeatherKit current unchanged; nothing queued`.
+
 ### Planned weather collection and publishing
 
-The planned design is change-driven: fetch each provider response on a
+The collection design is change-driven: fetch each polled provider response on a
 request-level schedule, extract all of its feed samples, and publish only
 samples whose values have changed. Most providers return multiple useful
 measurements in one JSON response, so fetch frequency should be chosen for the
@@ -381,7 +468,7 @@ Providers must identify source units explicitly and avoid reconverting values
 already in the desired units. A provider's missing-field policy, unit metadata,
 output precision, and text formatting belong in its adapter.
 
-These helpers are not yet used by the bring-up firmware. Feed change detection
+These helpers are used by the WeatherKit current adapter. Feed change detection
 is implemented in the publisher. UTC/freshness handling, provider descriptions,
 averaging, and pressure trends will
 be added with the relevant collection/publishing infrastructure.
@@ -422,7 +509,7 @@ against a small fake MQTT/serial transport with dummy credentials, without
 accessing the network or using real account credentials:
 
 ```powershell
-& "$env:USERPROFILE\.platformio\penv\Scripts\python.exe" -m ziglang c++ -std=c++11 -Wall -Wextra -Werror -pedantic -Itest\support -Iinclude test\test_aio_publisher.cpp -o .pio\host-tests\aio_publisher.exe
+& "$env:USERPROFILE\.platformio\penv\Scripts\python.exe" -m ziglang c++ -std=c++11 -Wall -Wextra -Werror -pedantic -Itest\support -Iinclude "-I.pio\libdeps\seeed_xiao_esp32s3\ArduinoJson\src" test\test_aio_publisher.cpp -o .pio\host-tests\aio_publisher.exe
 if ($LASTEXITCODE -eq 0) { & .\.pio\host-tests\aio_publisher.exe }
 ```
 
@@ -437,6 +524,15 @@ Change-detection cases cover first values, duplicates before send and in flight,
 acknowledged repeats, mixed changed/unchanged groups, FIFO reversions, repeated
 keys within one group, formatting differences, retry state, cache capacity,
 atomic rejection, and initial sends after a simulated reboot.
+
+Build the main environment first to restore its declared ArduinoJson dependency.
+[WeatherKit tests](test/test_weatherkit_current.cpp) use the publisher test
+command with that test source and a separate output executable. They cover
+all 20 feed mappings, valid zeroes/negative temperatures, missing/invalid fields,
+malformed JSON, chunk assembly, oversize/overflow/disconnect handling, and
+publish-queue retries across timer wraparound. Publisher tests additionally
+exercise chunked MQTT events through the real adapter, change filter, paced
+publishes, completion logging, and suppression of a repeated source snapshot.
 
 ## Wiring
 
@@ -470,7 +566,8 @@ is upside down, change `setRotation(3)` to `setRotation(1)`.
    `TZ_STRING` must be a POSIX rule (for example, `CST6CDT,M3.2.0,M11.1.0`
    for US Central), not an IANA name. The template defaults to UTC.
    Set `AIO_USERNAME` and `AIO_KEY` for the main firmware's publisher and the
-   WeatherKit MQTT diagnostic. The diagnostic also requires
+   WeatherKit MQTT diagnostic. WeatherKit current collection and the diagnostic
+   also require
    `AIO_WEATHER_LOCATION_ID`. The provider keys are `OPENWEATHER_KEY`,
    `WEATHERAPI_KEY`,
    `VISUAL_CROSSING_KEY`, `WWO_KEY` (World Weather Online), and

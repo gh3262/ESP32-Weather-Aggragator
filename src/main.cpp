@@ -335,7 +335,7 @@ void drawStatus(uint32_t now) {
                           : "Wi-Fi setup failed; see USB serial.");
     drawLine(86, wifiReady ? "Copy credentials_template.h, then rebuild."
                           : "Reset the board to try initialization again.");
-    drawLine(102, "Weather feeds are not enabled yet.");
+    drawLine(102, "Weather collection waits for Wi-Fi.");
   } else {
     // Limit the byte count so even a full-length SSID fits on one line.
     const String ssid = online ? WiFi.SSID()

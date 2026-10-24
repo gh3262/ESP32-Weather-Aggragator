@@ -1,4 +1,5 @@
 #include "aio_publisher.h"
+#include "weatherkit_current.h"
 
 #include <Arduino.h>
 #include <mqtt_client.h>
@@ -10,11 +11,16 @@
 #include <deque>
 #include <map>
 #include <string>
+#include <time.h>
 
 #if __has_include("credentials.h")
 #include "credentials.h"
 #else
 #include "credentials_template.h"
+#endif
+
+#ifndef AIO_WEATHER_LOCATION_ID
+#define AIO_WEATHER_LOCATION_ID ""
 #endif
 
 namespace aio_publisher {
@@ -62,6 +68,7 @@ struct Publish {
   bool isGroupEnd;
   bool isLog;
   bool failureLogged;
+  size_t groupUpdateCount;
 };
 
 struct PublishedValue {
@@ -80,7 +87,12 @@ std::atomic<bool> brokerReportedError{false};
 std::atomic<bool> brokerReportedThrottle{false};
 char errorsTopic[96] = {};
 char throttleTopic[96] = {};
+std::string currentTopic;
+std::atomic<bool> currentSubscriptionFailed{false};
+bool retryCurrentSubscription = false;
+uint32_t lastCurrentSubscriptionRetryAt = 0;
 bool configured = false;
+bool clockSynchronized = false;
 bool clientStopped = false;
 bool startAttempted = false;
 bool lastConnectionState = false;
@@ -101,10 +113,15 @@ void onMqttEvent(void*, esp_event_base_t, int32_t eventId, void* eventData) {
       if (errorsId < 0 || throttleId < 0) {
         mqttError.store(-1);
       }
+      if (!currentTopic.empty() &&
+          esp_mqtt_client_subscribe(event->client, currentTopic.c_str(), 0) < 0) {
+        currentSubscriptionFailed.store(true);
+      }
       break;
     }
     case MQTT_EVENT_DISCONNECTED:
       mqttConnected.store(false);
+      weatherkit_current::disconnected();
       break;
     case MQTT_EVENT_PUBLISHED:
       acknowledgedMessageId.store(event->msg_id);
@@ -117,6 +134,13 @@ void onMqttEvent(void*, esp_event_base_t, int32_t eventId, void* eventData) {
       }
       break;
     case MQTT_EVENT_DATA:
+      weatherkit_current::receive(
+          !currentTopic.empty() && event->topic_len > 0 &&
+              static_cast<size_t>(event->topic_len) == currentTopic.size() &&
+              memcmp(event->topic, currentTopic.data(), currentTopic.size()) == 0,
+          event->data, static_cast<size_t>(event->data_len),
+          static_cast<size_t>(event->current_data_offset),
+          static_cast<size_t>(event->total_data_len));
       if (event->current_data_offset == 0 && event->topic_len > 0) {
         if (static_cast<size_t>(event->topic_len) == strlen(errorsTopic) &&
             memcmp(event->topic, errorsTopic, strlen(errorsTopic)) == 0) {
@@ -159,7 +183,17 @@ void queueLog(const char* message) {
                   message);
     return;
   }
-  pendingLogs.push_back(message);
+  char stamp[32] = "TIME_UNSYNCED";
+  if (clockSynchronized) {
+    const time_t eventTime = time(nullptr);
+    struct tm local;
+    if (localtime_r(&eventTime, &local) == nullptr ||
+        strftime(stamp, sizeof(stamp), "%Y%m%d%H%M%S", &local) == 0) {
+      Serial.println("AIO ERROR: unable to format local log timestamp");
+      snprintf(stamp, sizeof(stamp), "TIME_UNSYNCED");
+    }
+  }
+  pendingLogs.push_back(std::string(stamp) + " " + message);
 }
 
 void queueMqttLog(const char* message) {
@@ -247,9 +281,10 @@ void completePublish() {
   previous.value = published.value;
   previous.acknowledged = true;
   if (published.isGroupEnd) {
-    char message[kMaxGroupNameLength + 32];
-    snprintf(message, sizeof(message), "Sent feed group %s",
-             published.groupName.c_str());
+    char message[kMaxGroupNameLength + 64];
+    snprintf(message, sizeof(message), "Sent feed group %s - Number Updated: %u",
+             published.groupName.c_str(),
+             static_cast<unsigned>(published.groupUpdateCount));
     queueMqttLog(message);
   }
 }
@@ -261,7 +296,7 @@ void promoteLog() {
   const std::string message = pendingLogs.front();
   char topic[160];
   snprintf(topic, sizeof(topic), "%s/feeds/%s", AIO_USERNAME, kLogFeed);
-  pending.push_back({topic, message, "", false, true, false});
+  pending.push_back({topic, message, "", false, true, false, 0});
   pendingLogs.pop_front();
 }
 
@@ -279,12 +314,21 @@ void begin() {
   configured = true;
   snprintf(errorsTopic, sizeof(errorsTopic), "%s/errors", AIO_USERNAME);
   snprintf(throttleTopic, sizeof(throttleTopic), "%s/throttle", AIO_USERNAME);
+  if (AIO_WEATHER_LOCATION_ID[0]) {
+    currentTopic = std::string(AIO_USERNAME) + "/integration/weather/" +
+                   AIO_WEATHER_LOCATION_ID + "/current";
+    Serial.println("WeatherKit: current enabled; first data waits for next MQTT push");
+  } else {
+    Serial.println("WeatherKit: current disabled; configure AIO_WEATHER_LOCATION_ID");
+  }
 }
 
 void update(bool wifiConnected, bool timeSynchronized, uint32_t now) {
   if (!configured) {
     return;
   }
+  clockSynchronized = timeSynchronized;
+  weatherkit_current::update(now);
 
   if (!client && wifiConnected && timeSynchronized &&
       (!startAttempted || now - lastStartAttemptAt >= kMqttStartRetryMs)) {
@@ -304,6 +348,22 @@ void update(bool wifiConnected, bool timeSynchronized, uint32_t now) {
   }
 
   const int error = mqttError.exchange(0);
+  if (currentSubscriptionFailed.exchange(false)) {
+    Serial.println("WeatherKit current ERROR: MQTT subscription enqueue failed; "
+                   "retrying in 15 seconds");
+    retryCurrentSubscription = true;
+    lastCurrentSubscriptionRetryAt = now;
+  }
+  if (retryCurrentSubscription && connected &&
+      now - lastCurrentSubscriptionRetryAt >= kMqttStartRetryMs) {
+    lastCurrentSubscriptionRetryAt = now;
+    if (esp_mqtt_client_subscribe(client, currentTopic.c_str(), 0) >= 0) {
+      retryCurrentSubscription = false;
+      Serial.println("WeatherKit current: subscription retry queued");
+    } else {
+      Serial.println("WeatherKit current ERROR: subscription retry failed");
+    }
+  }
   if (error != 0) {
     if (error == -1) {
       queueMqttLog("MQTT error/throttle subscription failed");
@@ -416,7 +476,7 @@ bool enqueueGroup(const char* groupName, const FeedSample* samples,
     if (effectiveValue && *effectiveValue == samples[i].value) {
       continue;
     }
-    changed.push_back({topic, samples[i].value, groupName, false, false, false});
+    changed.push_back({topic, samples[i].value, groupName, false, false, false, 0});
     if (previous == publishedValues.end()) {
       newFeeds.emplace(topic, PublishedValue{});
     }
@@ -435,6 +495,7 @@ bool enqueueGroup(const char* groupName, const FeedSample* samples,
     return false;
   }
   changed.back().isGroupEnd = true;
+  changed.back().groupUpdateCount = changed.size();
   publishedValues.insert(newFeeds.begin(), newFeeds.end());
   pending.insert(pending.end(), changed.begin(), changed.end());
   return true;

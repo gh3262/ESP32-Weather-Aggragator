@@ -28,6 +28,9 @@ struct esp_mqtt_event_t {
   int current_data_offset;
   int topic_len;
   char* topic;
+  char* data;
+  int data_len;
+  int total_data_len;
 };
 typedef esp_mqtt_event_t* esp_mqtt_event_handle_t;
 
