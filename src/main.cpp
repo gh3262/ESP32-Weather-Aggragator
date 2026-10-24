@@ -385,12 +385,46 @@ void drawStatus(uint32_t now) {
            static_cast<unsigned long>(ESP.getFreeHeap() / 1024));
   drawLine(122, line);
 }
+void handleSerialCommands() {
+  static uint32_t testRun = 0;
+  while (Serial.available()) {
+    const int command = Serial.read();
+    if (command == 't' || command == 'T') {
+      char first[48];
+      char second[48];
+      snprintf(first, sizeof(first), "publisher-test:%lu:A",
+               static_cast<unsigned long>(testRun + 1));
+      snprintf(second, sizeof(second), "publisher-test:%lu:B",
+               static_cast<unsigned long>(testRun + 1));
+      const aio_publisher::FeedSample samples[] = {
+          {"aggregator.diag", first}, {"aggregator.diag", first},
+          {"aggregator.diag", second}, {"aggregator.diag", first}};
+      if (aio_publisher::enqueueGroup("publisher-test", samples, 4)) {
+        ++testRun;
+        Serial.printf("Publisher test %lu accepted: A,A,B,A submitted; "
+                      "expect A,B,A in aggregator.diag, at least 2 seconds apart.\n",
+                      static_cast<unsigned long>(testRun));
+        Serial.println("Delivery waits for MQTT; aggregator.log will report "
+                       "'Sent feed group publisher-test' after acknowledgement.");
+      } else {
+        Serial.println("ERROR: publisher test rejected; resolve the AIO/queue "
+                       "error above, then send t to retry.");
+      }
+    } else if (command == '?') {
+      Serial.println("Commands: t = publisher A/A/B/A test to aggregator.diag, "
+                     "? = help.");
+    } else if (command != '\r' && command != '\n' && command != ' ') {
+      Serial.println("Unknown command; send ? for help.");
+    }
+  }
+}
 }  // namespace
 
 void setup() {
   // USB CDC leaves the TX/RX header pins available for the display.
   Serial.begin(115200);
   Serial.println("\nWeather aggregator: hardware and Wi-Fi bring-up");
+  Serial.println("Send t for the publisher test to aggregator.diag, ? for help.");
   aio_publisher::begin();
   if (kEnableStatusPixels) {
     pixelsReady = status_pixels::begin();
@@ -444,6 +478,7 @@ void loop() {
   updateTime(now);
   aio_publisher::update(networkState == NetworkState::Online,
                         timeSynchronized, now);
+  handleSerialCommands();
   updateStatusPixel();
   if (refreshNeeded || now - lastRefreshAt >= kRefreshMs) {
     drawStatus(now);

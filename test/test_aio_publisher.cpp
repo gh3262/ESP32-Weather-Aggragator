@@ -377,5 +377,29 @@ int main() {
   queueLog("repeated event");
   assert(pendingLogs.size() == 2);
 
+  reset();
+  pending.clear();
+  pendingLogs.clear();
+  const FeedSample manualTest[] = {
+      {"aggregator.diag", "publisher-test:1:A"},
+      {"aggregator.diag", "publisher-test:1:A"},
+      {"aggregator.diag", "publisher-test:1:B"},
+      {"aggregator.diag", "publisher-test:1:A"}};
+  assert(enqueueGroup("publisher-test", manualTest, 4));
+  assert(pending.size() == 3);
+  for (uint32_t now = 2000; now <= 8000; now += 2000) {
+    tick(now);
+    acknowledge();
+    tick(now + 1);
+  }
+  assert(sent.size() == 4);
+  assert(sent[0].topic == "test-user/feeds/aggregator.diag");
+  assert(sent[0].value == "publisher-test:1:A");
+  assert(sent[1].value == "publisher-test:1:B");
+  assert(sent[2].value == "publisher-test:1:A");
+  assert(sent[3].topic == "test-user/feeds/aggregator.log");
+  assert(sent[3].value == "Sent feed group publisher-test");
+  assert(pending.empty() && pendingLogs.empty());
+
   puts("AIO publisher tests passed.");
 }

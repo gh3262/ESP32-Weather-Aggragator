@@ -115,6 +115,30 @@ The current API supports ordinary, undated feed values only. Timestamped
 historical data will need timestamp-aware payloads and cache identities when
 that provider integration is added; it must not use this undated path.
 
+### On-board publisher test
+
+Upload the main `seeed_xiao_esp32s3` environment and open its serial monitor at
+115200 baud. After MQTT connects, send `t` (a trailing newline is fine).
+The command submits `A,A,B,A` through the normal change filter and publish
+queue, targeting only `aggregator.diag`. Existing feed history is not cleared.
+For the first test run since boot, expect exactly these three new entries:
+
+```text
+publisher-test:1:A
+publisher-test:1:B
+publisher-test:1:A
+```
+
+The duplicate A is suppressed, while the return from B to A is preserved.
+Verify the entries' timestamps are at least two seconds apart (other queued
+traffic may increase the gap), then check `aggregator.log` for
+`Sent feed group publisher-test`. Acceptance on serial means queued, not yet
+delivered; completion is logged only after MQTT acknowledges all three samples.
+QoS 1 recovery can duplicate data points after lost acknowledgements, as noted
+above. Repeating `t` uses run 2, then run 3, so each run exercises all three
+publishes. The run counter resets on reboot. Send `?` to repeat command help.
+The test never runs automatically and does not write to real weather feeds.
+
 ### Planned weather collection and publishing
 
 The planned design is change-driven: fetch each provider response on a
