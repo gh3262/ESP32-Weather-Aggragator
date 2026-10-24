@@ -4,6 +4,7 @@
 #include <map>
 
 TestSerial Serial;
+uint32_t testMillis = 0;
 namespace {
 std::map<std::string, std::string> submitted;
 std::string submittedGroup;
@@ -31,6 +32,13 @@ void reset() {
   retryPending = false;
   waitingSamples.clear();
   lastRetryAt = 0;
+  testMillis = 0;
+  healthStarted = false;
+  everConnected = false;
+  for (auto& source : sources) {
+    source.received = false;
+    source.lastReceivedAt = 0;
+  }
   submissions = 0;
   submitted.clear();
   submittedGroup.clear();
@@ -266,7 +274,7 @@ int main() {
       {"hours1snowfallintensity", "0"}, {"hours1snowfallamount", "0"},
       {"hours1temperature", "68.0"}, {"hours1temperatureapparent", "66.2"},
       {"hours1temperaturedewpoint", "50.0"}, {"hours1uvindex", "3"},
-      {"hours1visibility", "16093.44"}, {"hours1winddirection", "SW"},
+      {"hours1visibility", "10"}, {"hours1winddirection", "SW"},
       {"hours1windgust", "20"}, {"hours1windspeed", "10"}};
   assert(submitted == expectedHourly);
   deliver(R"({"daylight":false,"temperature":-10,"snowfallAmount":0})", Group::Hour1);
@@ -279,6 +287,99 @@ int main() {
               "visibility":-1,"forecastStart":null})", Group::Hour1);
   update(2);
   assert(submissions == hourlySubmissions);
+
+  reset();
+  assert(health(false, 0) == HealthStatus::Amber);
+  assert(health(false, 29999) == HealthStatus::Amber);
+  assert(health(false, 30000) == HealthStatus::Red);
+  assert(health(true, 30001) == HealthStatus::Amber);
+  assert(health(true, 330000) == HealthStatus::Amber);
+  assert(health(true, 330001) == HealthStatus::Red);
+
+  reset();
+  assert(health(true, 0) == HealthStatus::Amber);
+  // A blocked publisher must not hide fresh reception for other topics.
+  acceptGroup = false;
+  const char* validHealth = R"({"precipitationIntensity":0})";
+  testMillis = 1000;
+  for (const auto& source : sources) {
+    deliver(validHealth, source.group);
+  }
+  update(1000);
+  assert(health(true, 1000) == HealthStatus::Green);
+  assert(health(true, 180999) == HealthStatus::Green);
+  assert(health(true, 181000) == HealthStatus::Amber);
+  assert(health(true, 301000) == HealthStatus::Red);
+  assert(health(false, 1001) == HealthStatus::Red);
+  acceptGroup = true;
+  for (const auto& source : sources) {
+    expectedGroup = groupName(source.group);
+    update(301000);
+  }
+  acceptGroup = false;
+  expectedGroup = "WeatherKit current";
+  // Refresh three topics, leaving hour1 stale.
+  testMillis = 301001;
+  for (const auto& source : sources) {
+    if (source.group != Group::Hour1) {
+      deliver(validHealth, source.group);
+    }
+  }
+  update(301001);
+  assert(health(true, 301001) == HealthStatus::Red);
+  deliver("not json", Group::Hour1);
+  update(301002);
+  assert(health(true, 301002) == HealthStatus::Red);
+  deliver(validHealth, Group::Hour1);
+  update(301003);
+  assert(health(true, 301003) == HealthStatus::Green);
+  // Disabled groups do not hold the indicator amber.
+  reset();
+  const feed_config::Mapping disabledHealth[] = {
+      {false, "temperature", "unused", Conversion::Temperature}};
+  const Source saved = sources[3];
+  sources[3] = Source(Group::Hour1, disabledHealth, 1);
+  assert(health(true, 0) == HealthStatus::Amber);
+  acceptGroup = false;
+  for (size_t i = 0; i < 3; ++i) {
+    deliver(validHealth, sources[i].group);
+  }
+  update(0);
+  assert(health(true, 0) == HealthStatus::Green);
+  sources[3] = saved;
+
+  reset();
+  // Validation time must not make an old queued message appear fresh.
+  assert(health(true, 0) == HealthStatus::Amber);
+  acceptGroup = false;
+  testMillis = 1000;
+  for (const auto& source : sources) {
+    deliver(validHealth, source.group);
+  }
+  update(301000);
+  assert(health(true, 301000) == HealthStatus::Red);
+  Source savedSources[] = {sources[0], sources[1], sources[2], sources[3]};
+  for (auto& source : sources) {
+    source.mappings = disabledHealth;
+    source.count = 1;
+  }
+  assert(health(true, 301000) == HealthStatus::Off);
+  for (size_t i = 0; i < 4; ++i) {
+    sources[i] = savedSources[i];
+  }
+
+  reset();
+  const uint32_t nearWrap = UINT32_MAX - 1000;
+  testMillis = nearWrap;
+  assert(health(true, nearWrap) == HealthStatus::Amber);
+  acceptGroup = false;
+  for (const auto& source : sources) {
+    deliver(validHealth, source.group);
+  }
+  update(nearWrap);
+  assert(health(true, nearWrap + 179999) == HealthStatus::Green);
+  assert(health(true, nearWrap + 180000) == HealthStatus::Amber);
+  assert(health(true, nearWrap + 300000) == HealthStatus::Red);
 
   puts("WeatherKit current, minute, and hour1 tests passed.");
 }

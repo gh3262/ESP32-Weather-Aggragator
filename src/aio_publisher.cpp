@@ -113,6 +113,12 @@ int outstandingMessageId = 0;
 uint32_t outstandingAt = 0;
 uint32_t lastPublishAt = 0;
 uint32_t lastStartAttemptAt = 0;
+bool healthStarted = false;
+bool transportReady = false;
+bool haveAcknowledgement = false;
+bool publishProblem = false;
+bool publishTimedOut = false;
+uint32_t unavailableSince = 0;
 
 void onMqttEvent(void*, esp_event_base_t, int32_t eventId, void* eventData) {
   const esp_mqtt_event_handle_t event =
@@ -362,6 +368,15 @@ void update(bool wifiConnected, bool timeSynchronized, uint32_t now) {
   }
 
   const bool connected = mqttConnected.load();
+  const bool ready = wifiConnected && timeSynchronized && connected;
+  if (!healthStarted || (transportReady && !ready)) {
+    unavailableSince = now;
+    healthStarted = true;
+  }
+  transportReady = ready;
+  if (!ready) {
+    haveAcknowledgement = false;
+  }
   if (connected != lastConnectionState) {
     lastConnectionState = connected;
     if (connected) {
@@ -400,19 +415,25 @@ void update(bool wifiConnected, bool timeSynchronized, uint32_t now) {
     }
   }
   if (brokerReportedError.exchange(false)) {
+    publishProblem = true;
     Serial.println("AIO ERROR: Adafruit IO reported an account error");
   }
   if (brokerReportedThrottle.exchange(false)) {
+    publishProblem = true;
     Serial.println("AIO ERROR: Adafruit IO reported publish throttling");
   }
 
   const int ackId = acknowledgedMessageId.exchange(0);
   if (ackId != 0 && ackId == outstandingMessageId) {
     completePublish();
+    haveAcknowledgement = true;
+    publishProblem = false;
+    publishTimedOut = false;
   }
 
   if (outstandingMessageId != 0 &&
       now - outstandingAt >= kPublishTimeoutMs) {
+    publishTimedOut = true;
     Serial.println("AIO ERROR: publish acknowledgement timed out; resetting MQTT");
     if (!pending.empty() && !pending.front().isLog &&
         !pending.front().failureLogged) {
@@ -437,6 +458,7 @@ void update(bool wifiConnected, bool timeSynchronized, uint32_t now) {
       client, next.topic.c_str(), next.value.c_str(),
       static_cast<int>(next.value.size()), 1, 0, true);
   if (messageId < 0) {
+    publishProblem = true;
     if (!next.failureLogged) {
       Serial.printf("AIO ERROR: unable to queue publish to %s; will retry\n",
                     next.topic.c_str());
@@ -451,6 +473,31 @@ void update(bool wifiConnected, bool timeSynchronized, uint32_t now) {
   outstandingMessageId = messageId;
   outstandingAt = static_cast<uint32_t>(now);
   lastPublishAt = static_cast<uint32_t>(now);
+}
+
+HealthStatus health(uint32_t now) {
+  if (!configured) {
+    return HealthStatus::Off;
+  }
+  if (publishTimedOut) {
+    return HealthStatus::Red;
+  }
+  if (!transportReady || !mqttConnected.load()) {
+    return healthStarted && now - unavailableSince >= kPublishTimeoutMs
+               ? HealthStatus::Red : HealthStatus::Amber;
+  }
+  if (!haveAcknowledgement || publishProblem ||
+      (outstandingMessageId != 0 && now - outstandingAt >= 10000)) {
+    return HealthStatus::Amber;
+  }
+  return HealthStatus::Green;
+}
+
+HealthStatus weatherHealth(uint32_t now) {
+  if (!configured || !AIO_WEATHER_LOCATION_ID[0]) {
+    return HealthStatus::Off;
+  }
+  return weatherkit_current::health(transportReady && mqttConnected.load(), now);
 }
 
 bool enqueueGroup(const char* groupName, const FeedSample* samples,

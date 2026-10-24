@@ -52,6 +52,27 @@ when counting unique feeds or assume both should run on the ESP32.
 
 ## 2. Apple WeatherKit via Adafruit IO
 
+### MQTT availability update (2026-10-24)
+
+The integration API's `links.mqtt` response supplied by the owner advertises
+these 11 source types at
+`{username}/integration/weather/{location_id}/{type}`:
+
+- `current`
+- `forecast_minutes_5`, `forecast_minutes_30`
+- `forecast_hours_1`, `forecast_hours_2`, `forecast_hours_6`,
+  **`forecast_hours_12`**, `forecast_hours_24`
+- `forecast_days_1`, `forecast_days_2`, `forecast_days_5`
+
+The provider's documentation topic list omits `forecast_hours_12`, but the API
+explicitly supplies its MQTT path. Live hour-12 delivery remains untested.
+The diagnostic currently subscribes to the other ten topics; the main firmware
+subscribes only to current, m5, m30, and hour1. This availability correction does
+not enable additional subscriptions or change destination mappings.
+
+The legacy hour-12 outputs are already inventoried under `f4.py` below and in
+the companion CSV; no additional destination rows are needed.
+
 ### 2.1 Fetches, script chain, and timing
 
 Each execution of the controller or a forecast handler independently calls

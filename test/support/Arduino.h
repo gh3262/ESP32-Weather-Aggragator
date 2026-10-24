@@ -24,5 +24,7 @@ struct TestSerial {
 };
 
 extern TestSerial Serial;
+extern uint32_t testMillis;
+inline uint32_t millis() { return testMillis; }
 
 #endif

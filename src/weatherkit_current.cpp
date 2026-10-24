@@ -33,7 +33,39 @@ using feed_config::Mapping;
 struct Snapshot {
   Group group;
   std::string payload;
+  uint32_t receivedAt = 0;
+  bool parsed = false;
+  std::vector<Sample> samples;
+
+  Snapshot(Group group, std::string payload, uint32_t receivedAt = 0)
+      : group(group), payload(std::move(payload)), receivedAt(receivedAt) {}
 };
+
+struct Source {
+  Group group;
+  const Mapping* mappings;
+  size_t count;
+  bool received = false;
+  uint32_t lastReceivedAt = 0;
+
+  Source(Group group, const Mapping* mappings, size_t count)
+      : group(group), mappings(mappings), count(count) {}
+};
+
+Source sources[] = {
+    {Group::Current, feed_config::weatherkitCurrent,
+     sizeof(feed_config::weatherkitCurrent) / sizeof(Mapping)},
+    {Group::Minutes5, feed_config::weatherkitMinutes5,
+     sizeof(feed_config::weatherkitMinutes5) / sizeof(Mapping)},
+    {Group::Minutes30, feed_config::weatherkitMinutes30,
+     sizeof(feed_config::weatherkitMinutes30) / sizeof(Mapping)},
+    {Group::Hour1, feed_config::weatherkitHour1,
+     sizeof(feed_config::weatherkitHour1) / sizeof(Mapping)},
+};
+bool healthStarted = false;
+bool everConnected = false;
+uint32_t healthStartedAt = 0;
+uint32_t monitoringStartedAt = 0;
 
 const char* groupName(Group group) {
   switch (group) {
@@ -209,6 +241,14 @@ void receive(Group group, const char* data, size_t length,
     if (group == Group::None) {
       return;
     }
+    bool knownGroup = false;
+    for (const Source& source : sources) {
+      knownGroup = knownGroup || source.group == group;
+    }
+    if (!knownGroup) {
+      ++receiveFailures;
+      return;
+    }
     if (total == 0 || total > kMaxPayloadBytes) {
       ++receiveFailures;
       return;
@@ -232,7 +272,7 @@ void receive(Group group, const char* data, size_t length,
     if (incoming.size() >= kMaxPendingSnapshots) {
       ++receiveFailures;
     } else {
-      incoming.push_back({assemblyGroup, std::move(assembly)});
+      incoming.push_back({assemblyGroup, std::move(assembly), millis()});
     }
     assembly.clear();
     assembling = false;
@@ -255,6 +295,24 @@ void update(uint32_t now) {
     std::lock_guard<std::mutex> guard(receiveLock);
     failures = receiveFailures;
     receiveFailures = 0;
+    // Validate reception independently of a blocked output queue.
+    for (Snapshot& queued : incoming) {
+      if (queued.parsed) {
+        continue;
+      }
+      queued.parsed = true;
+      for (Source& source : sources) {
+        if (source.group == queued.group) {
+          if (parse(queued.payload, queued.samples, source.mappings,
+                    source.count, queued.group) && !queued.samples.empty()) {
+            source.received = true;
+            source.lastReceivedAt = queued.receivedAt;
+          }
+          break;
+        }
+      }
+      queued.payload.clear();
+    }
     if (waitingSamples.empty() && !incoming.empty()) {
       snapshot = std::move(incoming.front());
       incoming.pop_front();
@@ -265,32 +323,9 @@ void update(uint32_t now) {
                   "(oversize, invalid/incomplete chunks, or receive queue full)\n",
                   static_cast<unsigned long>(failures));
   }
-  if (!snapshot.payload.empty()) {
+  if (snapshot.parsed) {
     waitingGroup = snapshot.group;
-    const Mapping* mappings = nullptr;
-    size_t count = 0;
-    switch (snapshot.group) {
-      case Group::Current:
-        mappings = feed_config::weatherkitCurrent;
-        count = sizeof(feed_config::weatherkitCurrent) / sizeof(Mapping);
-        break;
-      case Group::Minutes5:
-        mappings = feed_config::weatherkitMinutes5;
-        count = sizeof(feed_config::weatherkitMinutes5) / sizeof(Mapping);
-        break;
-      case Group::Minutes30:
-        mappings = feed_config::weatherkitMinutes30;
-        count = sizeof(feed_config::weatherkitMinutes30) / sizeof(Mapping);
-        break;
-      case Group::Hour1:
-        mappings = feed_config::weatherkitHour1;
-        count = sizeof(feed_config::weatherkitHour1) / sizeof(Mapping);
-        break;
-      default:
-        Serial.println("WeatherKit ERROR: invalid source group");
-        return;
-    }
-    parse(snapshot.payload, waitingSamples, mappings, count, snapshot.group);
+    waitingSamples = std::move(snapshot.samples);
   }
   if (waitingSamples.empty() || (retryPending && now - lastRetryAt < kRetryMs)) {
     return;
@@ -308,5 +343,44 @@ void update(uint32_t now) {
     retryPending = true;
     lastRetryAt = now;
   }
+}
+
+HealthStatus health(bool mqttConnected, uint32_t now) {
+  if (!healthStarted) {
+    healthStarted = true;
+    healthStartedAt = now;
+  }
+  if (mqttConnected && !everConnected) {
+    everConnected = true;
+    monitoringStartedAt = now;
+  }
+  bool enabled = false;
+  HealthStatus result = HealthStatus::Green;
+  for (const Source& source : sources) {
+    bool sourceEnabled = false;
+    for (size_t i = 0; i < source.count; ++i) {
+      sourceEnabled = sourceEnabled || source.mappings[i].enabled;
+    }
+    if (!sourceEnabled) {
+      continue;
+    }
+    enabled = true;
+    const uint32_t age = now - (source.received ? source.lastReceivedAt
+                                               : monitoringStartedAt);
+    if (everConnected && age >= 300000) {
+      result = HealthStatus::Red;
+    } else if (result != HealthStatus::Red &&
+               (!source.received || age >= 180000)) {
+      result = HealthStatus::Amber;
+    }
+  }
+  if (!enabled) {
+    return HealthStatus::Off;
+  }
+  if (!mqttConnected) {
+    return everConnected || now - healthStartedAt >= 30000
+               ? HealthStatus::Red : HealthStatus::Amber;
+  }
+  return result;
 }
 }

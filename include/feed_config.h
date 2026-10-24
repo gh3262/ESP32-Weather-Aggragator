@@ -68,7 +68,7 @@ constexpr Mapping weatherkitHour1[] = {
     {true, "temperatureApparent", "hours1temperatureapparent", Conversion::Temperature},
     {true, "temperatureDewPoint", "hours1temperaturedewpoint", Conversion::Temperature},
     {true, "uvIndex", "hours1uvindex", Conversion::Raw},
-    {true, "visibility", "hours1visibility", Conversion::Raw},
+    {true, "visibility", "hours1visibility", Conversion::Miles},
     {true, "windDirection", "hours1winddirection", Conversion::Compass},
     {true, "windGust", "hours1windgust", Conversion::Mph},
     {true, "windSpeed", "hours1windspeed", Conversion::Mph},

@@ -66,34 +66,41 @@ void logWifiScan(WiFiEvent_t event, WiFiEventInfo_t info) {
   }
 }
 
-void updateStatusPixel() {
+void updateStatusPixels(uint32_t now) {
   if (!pixelsReady) {
     return;
   }
-  static bool havePreviousState = false;
-  static NetworkState previousState = NetworkState::Unconfigured;
-  if (havePreviousState && networkState == previousState) {
-    return;
-  }
-  bool success;
+  HealthStatus wifiHealth = HealthStatus::Red;
   switch (networkState) {
     case NetworkState::Online:
-      success = status_pixels::setPixel(0, 0, 255, 0);
+      wifiHealth = HealthStatus::Green;
       break;
     case NetworkState::Scanning:
     case NetworkState::Connecting:
-      success = status_pixels::setPixel(0, 255, 100, 0);
+      wifiHealth = HealthStatus::Amber;
       break;
     default:
-      success = status_pixels::setPixel(0, 255, 0, 0);
       break;
   }
-  if (success) {
-    previousState = networkState;
-    havePreviousState = true;
-  } else {
-    pixelsReady = false;
-    Serial.println("ERROR: status pixel disabled after write failure");
+  const HealthStatus states[] = {
+      wifiHealth, aio_publisher::health(now), aio_publisher::weatherHealth(now)};
+  static bool initialized[3] = {};
+  static HealthStatus previous[3] = {};
+  for (uint16_t index = 0; index < 3; ++index) {
+    if (initialized[index] && previous[index] == states[index]) {
+      continue;
+    }
+    const bool red = states[index] == HealthStatus::Red ||
+                     states[index] == HealthStatus::Amber;
+    const uint8_t green = states[index] == HealthStatus::Green ? 255 :
+                          states[index] == HealthStatus::Amber ? 100 : 0;
+    if (!status_pixels::setPixel(index, red ? 255 : 0, green, 0)) {
+      pixelsReady = false;
+      Serial.println("ERROR: status pixels disabled after write failure");
+      return;
+    }
+    previous[index] = states[index];
+    initialized[index] = true;
   }
 }
 
@@ -467,7 +474,7 @@ void setup() {
     startScan(millis());
   }
   lastRefreshAt = millis();
-  updateStatusPixel();
+  updateStatusPixels(lastRefreshAt);
   drawStatus(lastRefreshAt);
   refreshNeeded = false;
 }
@@ -479,7 +486,7 @@ void loop() {
   aio_publisher::update(networkState == NetworkState::Online,
                         timeSynchronized, now);
   handleSerialCommands();
-  updateStatusPixel();
+  updateStatusPixels(now);
   if (refreshNeeded || now - lastRefreshAt >= kRefreshMs) {
     drawStatus(now);
     lastRefreshAt = now;

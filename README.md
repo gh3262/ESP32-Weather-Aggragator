@@ -43,10 +43,11 @@ PlatformIO/Arduino firmware for a Seeed Studio XIAO ESP32-S3 with an Adafruit
   retries start 60 seconds after the preceding request. Once synchronized, the
   clock continues offline and the SNTP service periodically resynchronizes.
 - USB CDC serial diagnostics at 115200 baud; no wait for a serial monitor at boot.
-- Eight-pixel RGB NeoPixel ring on D0 (GPIO1), using only pixel 0 for network
+- Eight-pixel RGB NeoPixel ring on D0 (GPIO1), using pixel 0 for network
   status: amber while scanning/connecting, green when connected, and red when
-  unconfigured, initialization fails, or waiting to reconnect. The remaining
-  seven pixels start off. Brightness is limited to 16 out of 255 in software.
+  unconfigured, initialization fails, or waiting to reconnect. Two additional
+  pixels show AIO publishing health (1) and WeatherKit reception health (2);
+  pixels 3-7 remain off. Brightness is limited to 16 out of 255 in software.
   Enabled using `kEnableStatusPixels = true`; set it to `false` to isolate
   pixel initialization and updates during Wi-Fi diagnostics.
 
@@ -276,8 +277,8 @@ enabled mappings in [feed_config.h](include/feed_config.h).
 chance become whole percentages; temperatures become Fahrenheit with one
 decimal; wind speeds become whole mph; wind direction becomes compass text.
 Forecast daylight uses `It will be light` / `It will be dark`, unlike the
-current-condition wording. Visibility deliberately remains raw meters to
-preserve the legacy hour-1 feed, rather than current conditions' whole miles.
+current-condition wording. Visibility becomes whole miles, matching current
+conditions and correcting the legacy hour-1 handler's missing conversion.
 Pressure (hPa), precipitation/snow amounts (mm), intensities (mm/h), UV,
 condition, and trend retain their provider representations.
 
@@ -339,14 +340,18 @@ Apple WeatherKit is planned as a pushed source rather than a polled one. The
 Adafruit IO WeatherKit Power-Up (IO+) publishes each forecast block on its own
 MQTT topic, `{username}/integration/weather/{location_id}/{type}`, for the types
 `current`, `forecast_minutes_5`, `forecast_minutes_30`, `forecast_hours_1`,
-`forecast_hours_2`, `forecast_hours_6`, `forecast_hours_24`, `forecast_days_1`,
+`forecast_hours_2`, `forecast_hours_6`, `forecast_hours_12`, `forecast_hours_24`, `forecast_days_1`,
 `forecast_days_2`, and `forecast_days_5`. These match the groups the
 CircuitPython rotation (`f1.py`-`f8a.py`) split manually, and each message is
 much smaller than the combined HTTP response from `receive_weather`. Each topic
 acts as a request group whose updates arrive when Adafruit IO has new data;
 samples still pass through the same change filter and publishing queue.
+The integration API's `links.mqtt` response supplied on 2026-10-24 explicitly
+advertises `forecast_hours_12`, despite its omission from the provider's
+documentation topic list. Hour-12 message delivery has not yet been tested;
+neither the main firmware nor the diagnostic currently subscribes to it.
 Early measurements with the WeatherKit MQTT diagnostic build below show
-non-retained pushes of every topic about once a minute; longer runs will confirm
+non-retained pushes of its ten subscribed topics about once a minute; longer runs will confirm
 cadence, change frequency, and stability before this is relied on.
 
 ## Isolated Wi-Fi diagnostic build
@@ -495,15 +500,36 @@ The helper assumes eight standard 800 kHz GRB RGB pixels, not RGBW.
 color components are 0-255 before global brightness scaling. `setPixel` updates
 only the selected pixel and sends the ring buffer immediately; `clear` turns
 the whole ring off. Initialization and invalid-index errors are logged to USB
-serial. The main loop owns pixel 0, so reserve pixels 1-7 for future indicators.
+serial. The main loop owns pixels 0-2; pixels 3-7 are reserved for future indicators.
 These calls should remain on the main loop task, not interrupt handlers.
+
+| Position (index) | Purpose | Green | Amber | Red |
+| --- | --- | --- | --- | --- |
+| First (0) | Wi-Fi | Connected | Scanning/connecting | Offline/unconfigured |
+| Second (1) | AIO publishing | Connected with a successful publish acknowledgement | Starting/reconnecting, no acknowledgement yet, acknowledgement pending for 10 seconds, publish enqueue failure, or account error/throttle | Unavailable for 30 seconds, or publish acknowledgement timeout |
+| Third (2) | WeatherKit reception | Every enabled source topic has supplied usable data within 3 minutes | Waiting for first data, or any topic is at least 3 minutes old | MQTT disconnected after first connection, or any topic is at least 5 minutes old |
+
+AIO and WeatherKit use the same MQTT connection. Pixel 1 reports transport and
+publish acknowledgement health; pixel 2 tracks reception separately for current,
+m5, m30, and hour1. Unchanged valid payloads refresh reception health. Malformed,
+unusable, incomplete, or discarded messages do not. Reception is validated even
+when the output queue is blocked, using the message's actual arrival time.
+Groups with all mappings disabled are excluded. A disabled service's pixel is off.
+Before the first MQTT connection, pixel 2 is amber for 30 seconds, then red;
+its initial-data grace period is 5 minutes from the first connection.
+Pixel 1's timeout/failure indication clears after a successful acknowledgement;
+an idle queue does not become unhealthy simply because nothing changed.
 
 The EYESPI BFF's optional IRQ line also uses D0; the current non-touch display
 does not need it. D4/SDA and D5/SCL remain reserved for the STEMMA QT connector.
 No I2C devices are initialized yet.
 
 After uploading, check that pixel 0 progresses from amber to green, stays dim,
-and changes to red following a Wi-Fi disconnection. All other pixels should
+and changes to red following a Wi-Fi disconnection. Pixel 1 should become green
+after the initial log acknowledgement, and pixel 2 after all enabled topics
+arrive. Disconnect Wi-Fi to check pixels 0 and 2 turn red and pixel 1 progresses
+from amber to red after 30 seconds (or earlier on an outstanding publish timeout).
+Reconnect and verify publishing and source reception recover. Pixels 3-7 should
 remain off. A successful build/initialization cannot verify the physical ring
 or its RGB channel order.
 

@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include "health_status.h"
 
 namespace weatherkit_current {
 
@@ -13,6 +14,8 @@ void receive(Group group, const char* data, size_t length,
              size_t offset, size_t total);
 void disconnected();
 void update(uint32_t now);
+// Main-loop only. Disabled source groups do not participate in freshness.
+HealthStatus health(bool mqttConnected, uint32_t now);
 
 }
 

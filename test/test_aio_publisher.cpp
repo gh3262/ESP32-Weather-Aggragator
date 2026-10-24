@@ -17,6 +17,7 @@ struct tm* testLocalTime(const time_t*, struct tm*);
 #include <vector>
 
 TestSerial Serial;
+uint32_t testMillis = 0;
 
 time_t testTime(time_t*) { return 1792857600; }
 struct tm* testLocalTime(const time_t*, struct tm* local) {
@@ -61,6 +62,7 @@ void event(esp_mqtt_event_id_t type, int id = 0) {
 
 void tick(uint32_t now) {
   clockMs = now;
+  testMillis = now;
   aio_publisher::update(true, true, now);
 }
 
@@ -95,6 +97,18 @@ void reset(uint32_t now = 0) {
   outstandingAt = 0;
   lastPublishAt = 0;
   lastStartAttemptAt = 0;
+  healthStarted = false;
+  transportReady = false;
+  haveAcknowledgement = false;
+  publishProblem = false;
+  publishTimedOut = false;
+  unavailableSince = 0;
+  weatherkit_current::healthStarted = false;
+  weatherkit_current::everConnected = false;
+  for (auto& source : weatherkit_current::sources) {
+    source.received = false;
+    source.lastReceivedAt = 0;
+  }
   sent.clear();
   subscribedTopics.clear();
   nextId = 1;
@@ -586,13 +600,92 @@ int main() {
   assert(sent[0].topic == "test-user/feeds/hours1start");
   assert(sent[1].value == "It will be dark");
   assert(sent[2].value == "68.0");
-  assert(sent[3].value == "10000");
+  assert(sent[3].value == "6");
   assert(sent[4].value ==
          "20261024110442 Sent feed group WeatherKit hour1 - Number Updated: 4");
   minuteEvent(3, R"({"forecastStart":"2026-10-24T18:00:00Z","daylight":false,
                    "visibility":10000,"temperature":20})");
   tick(10002);
   assert(pending.empty() && pendingLogs.empty() && sent.size() == 5);
+
+  reset();
+  assert(health(0) == HealthStatus::Amber);
+  tick(2000);
+  acknowledge();
+  tick(2001);
+  assert(health(2001) == HealthStatus::Green);
+  assert(enqueueGroup("health-test", samples, 2));
+  tick(4000);
+  tick(13999);
+  assert(health(13999) == HealthStatus::Green);
+  tick(14000);
+  assert(health(14000) == HealthStatus::Amber);
+  tick(34000);
+  assert(health(34000) == HealthStatus::Red);
+  tick(34001);
+  event(MQTT_EVENT_CONNECTED);
+  tick(34002);
+  assert(health(34002) == HealthStatus::Red);
+  acknowledge();
+  tick(34003);
+  assert(health(34003) == HealthStatus::Green);
+
+  reset();
+  tick(2000);
+  acknowledge();
+  tick(2001);
+  brokerReportedThrottle = true;
+  assert(weatherHealth(2001) == HealthStatus::Amber);
+  tick(2002);
+  assert(health(2002) == HealthStatus::Amber);
+  assert(enqueueGroup("health-test", samples, 2));
+  tick(4000);
+  acknowledge();
+  tick(4001);
+  assert(health(4001) == HealthStatus::Green);
+  event(MQTT_EVENT_DISCONNECTED);
+  tick(5000);
+  assert(health(5000) == HealthStatus::Amber);
+  assert(weatherHealth(5000) == HealthStatus::Red);
+  tick(34999);
+  assert(health(34999) == HealthStatus::Amber);
+  tick(35000);
+  assert(health(35000) == HealthStatus::Red);
+  event(MQTT_EVENT_CONNECTED);
+  tick(35001);
+  assert(health(35001) == HealthStatus::Amber);
+  acknowledge();
+  tick(35002);
+  assert(health(35002) == HealthStatus::Green);
+  configured = false;
+  assert(health(35003) == HealthStatus::Off);
+  assert(weatherHealth(35003) == HealthStatus::Off);
+
+  reset();
+  tick(2000);
+  acknowledge();
+  tick(2001);
+  assert(enqueueGroup("health-test", samples, 2));
+  rejectPublish = true;
+  tick(4000);
+  assert(health(4000) == HealthStatus::Amber);
+  rejectPublish = false;
+  tick(6000);
+  acknowledge();
+  tick(6001);
+  assert(health(6001) == HealthStatus::Green);
+
+  reset(UINT32_MAX - 1000);
+  assert(health(UINT32_MAX - 1000) == HealthStatus::Amber);
+  acknowledge();
+  tick(UINT32_MAX - 999);
+  assert(health(UINT32_MAX - 999) == HealthStatus::Green);
+  event(MQTT_EVENT_DISCONNECTED);
+  tick(UINT32_MAX - 998);
+  tick(29000);
+  assert(health(29000) == HealthStatus::Amber);
+  tick(29001);
+  assert(health(29001) == HealthStatus::Red);
 
   puts("AIO publisher tests passed.");
 }

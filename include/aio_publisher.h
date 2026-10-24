@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include "health_status.h"
 
 namespace aio_publisher {
 
@@ -14,6 +15,9 @@ struct FeedSample {
 
 void begin();
 void update(bool wifiConnected, bool timeSynchronized, uint32_t now);
+// Main-loop only.
+HealthStatus health(uint32_t now);
+HealthStatus weatherHealth(uint32_t now);
 // Main-loop only. Copies accepted samples; true also means an unchanged no-op.
 // False rejects the entire group without changing queue/cache state.
 bool enqueueGroup(const char* groupName, const FeedSample* samples,
