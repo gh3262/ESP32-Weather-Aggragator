@@ -46,6 +46,7 @@ void reset(uint32_t now = 0) {
   using namespace aio_publisher;
   pending.clear();
   pendingLogs.clear();
+  publishedValues.clear();
   mqttConnected = false;
   acknowledgedMessageId = 0;
   mqttError = 0;
@@ -152,8 +153,11 @@ int main() {
 
   reset();
   FeedSample burst[60];
-  for (auto& sample : burst) {
-    sample = {"weather.temp", "72"};
+  char burstKeys[60][32];
+  for (size_t i = 0; i < 60; ++i) {
+    std::snprintf(burstKeys[i], sizeof(burstKeys[i]), "weather.feed%u",
+                  static_cast<unsigned>(i));
+    burst[i] = {burstKeys[i], "72"};
   }
   assert(enqueueGroup("burst", burst, 60));
   for (uint32_t now = 1; now <= 120000; ++now) {
@@ -234,7 +238,11 @@ int main() {
   const FeedSample tooLong[] = {{"valid", oversized.c_str()}};
   assert(!enqueueGroup("oversized", tooLong, 1) && pending.size() == queued);
   assert(enqueueGroup("full", burst, 60));
-  assert(!enqueueGroup("overflow", burst, 60));
+  const FeedSample overflow[] = {
+      {"new.feed", "1"}, {"new.other", "2"}, {"new.third", "3"}};
+  assert(!enqueueGroup("overflow", overflow, 3));
+  assert(publishedValues.count("test-user/feeds/new.feed") == 0);
+  assert(enqueueGroup("full-repeat", burst, 60));
 
   reset(UINT32_MAX - 1000);
   assert(sent.size() == 1);
@@ -253,6 +261,121 @@ int main() {
   assert(subscriptionCalls == 2);
   tick(1);
   assert(Serial.output.find("subscription failed") != std::string::npos);
+
+  reset();
+  pending.clear();
+  pendingLogs.clear();
+  assert(enqueueGroup("first", samples, 2));
+  assert(publishedValues.size() == 2);
+  assert(!publishedValues.at("test-user/feeds/weather.temp").acknowledged);
+  assert(enqueueGroup("repeat-before-send", samples, 2));
+  assert(pending.size() == 2);
+  tick(2000);
+  assert(sent.back().value == "72");
+  assert(enqueueGroup("repeat-in-flight", samples, 2));
+  assert(pending.size() == 2);
+  rejectPublish = true;
+  acknowledge();
+  tick(2001);
+  assert(publishedValues.at("test-user/feeds/weather.temp").acknowledged);
+  assert(publishedValues.at("test-user/feeds/weather.temp").value == "72");
+  rejectPublish = false;
+  tick(4000);
+  acknowledge();
+  tick(4001);
+  const size_t afterAck = pending.size();
+  assert(enqueueGroup("repeat-after-ack", samples, 2));
+  assert(pending.size() == afterAck);
+  const FeedSample mixed[] = {{"weather.temp", "73"}, {"weather.wind", "5"}};
+  assert(enqueueGroup("mixed", mixed, 2));
+  assert(pending.size() == afterAck + 1);
+  assert(pending.back().value == "73" && pending.back().isGroupEnd);
+  assert(publishedValues.at("test-user/feeds/weather.temp").value == "72");
+  const FeedSample reversion[] = {{"weather.temp", "72"}};
+  assert(enqueueGroup("reversion", reversion, 1));
+  assert(pending.back().value == "72");
+  assert(pending.size() == afterAck + 2);
+  assert(enqueueGroup("repeat-reversion", reversion, 1));
+  assert(pending.size() == afterAck + 2);
+  tick(6000);
+  acknowledge();
+  tick(6001);
+  tick(8000);
+  assert(sent.back().value == "73");
+  acknowledge();
+  tick(8001);
+  assert(publishedValues.at("test-user/feeds/weather.temp").value == "73");
+  tick(10000);
+  assert(sent.back().value == "72");
+  acknowledge();
+  tick(10001);
+  assert(publishedValues.at("test-user/feeds/weather.temp").value == "72");
+
+  reset();
+  pending.clear();
+  pendingLogs.clear();
+  const FeedSample sequence[] = {
+      {"weather.temp", "0"}, {"weather.temp", "0"}, {"weather.temp", "1"},
+      {"weather.temp", "0"}, {"weather.temp", "0"}};
+  assert(enqueueGroup("sequence", sequence, 5));
+  assert(pending.size() == 3 && publishedValues.size() == 1);
+  assert(!pending[0].isGroupEnd && !pending[1].isGroupEnd &&
+         pending[2].isGroupEnd);
+  tick(2000);
+  rejectPublish = true;
+  tick(32000);
+  assert(!publishedValues.at("test-user/feeds/weather.temp").acknowledged);
+  tick(32001);
+  event(MQTT_EVENT_CONNECTED);
+  rejectPublish = false;
+  tick(32002);
+  acknowledge();
+  tick(32003);
+  assert(publishedValues.at("test-user/feeds/weather.temp").value == "0");
+
+  reset();
+  pending.clear();
+  pendingLogs.clear();
+  const FeedSample invalidTail[] = {{"new.feed", "1"}, {"bad/key", "2"}};
+  assert(!enqueueGroup("invalid", invalidTail, 2));
+  assert(publishedValues.empty() && pending.empty());
+  assert(enqueueGroup("format", samples, 2));
+  const FeedSample formatted[] = {{"weather.temp", "72.0"}};
+  assert(enqueueGroup("format-change", formatted, 1));
+  assert(pending.size() == 3);
+  for (size_t i = publishedValues.size(); i < kMaxTrackedFeeds; ++i) {
+    publishedValues.emplace("reserved-" + std::to_string(i), PublishedValue{});
+  }
+  const size_t beforeFull = pending.size();
+  const FeedSample cacheOverflow[] = {{"weather.temp", "74"}, {"untracked", "1"}};
+  assert(!enqueueGroup("cache-full", cacheOverflow, 2));
+  assert(pending.size() == beforeFull && publishedValues.size() == kMaxTrackedFeeds);
+  assert(enqueueGroup("known-feed", reversion, 1));
+
+  reset();
+  pending.clear();
+  pendingLogs.clear();
+  assert(enqueueGroup("send-failure", samples, 2));
+  rejectPublish = true;
+  tick(2000);
+  assert(!publishedValues.at("test-user/feeds/weather.temp").acknowledged);
+  assert(enqueueGroup("retry-same-values", samples, 2));
+  assert(pending.size() == 2);
+  rejectPublish = false;
+  tick(4000);
+  acknowledge();
+  tick(4001);
+  assert(publishedValues.at("test-user/feeds/weather.temp").acknowledged);
+  assert(!publishedValues.at("test-user/feeds/weather.wind").acknowledged);
+
+  reset();
+  pending.clear();
+  pendingLogs.clear();
+  assert(enqueueGroup("after-reboot", samples, 2));
+  assert(pending.size() == 2);
+  queueLog("repeated event");
+  queueLog("repeated event");
+  assert(pendingLogs.size() == 2);
 
   puts("AIO publisher tests passed.");
 }

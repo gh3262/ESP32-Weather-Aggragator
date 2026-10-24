@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <map>
 #include <string>
 
 #if __has_include("credentials.h")
@@ -26,6 +27,7 @@ constexpr size_t kMaxFeedKeyLength = 64;
 constexpr size_t kMaxValueLength = 512;
 constexpr size_t kMaxGroupNameLength = 64;
 constexpr size_t kMaxLogEntries = 16;
+constexpr size_t kMaxTrackedFeeds = 256;
 constexpr char kLogFeed[] = "aggregator.log";
 constexpr char kBrokerUri[] = "mqtts://io.adafruit.com:8883";
 
@@ -62,9 +64,15 @@ struct Publish {
   bool failureLogged;
 };
 
+struct PublishedValue {
+  bool acknowledged = false;
+  std::string value;
+};
+
 esp_mqtt_client_handle_t client = nullptr;
 std::deque<Publish> pending;
 std::deque<std::string> pendingLogs;
+std::map<std::string, PublishedValue> publishedValues;
 std::atomic<bool> mqttConnected{false};
 std::atomic<int> acknowledgedMessageId{0};
 std::atomic<int> mqttError{0};
@@ -235,6 +243,9 @@ void completePublish() {
     Serial.printf("AIO: aggregator.log published\n");
     return;
   }
+  PublishedValue& previous = publishedValues.at(published.topic);
+  previous.value = published.value;
+  previous.acknowledged = true;
   if (published.isGroupEnd) {
     char message[kMaxGroupNameLength + 32];
     snprintf(message, sizeof(message), "Sent feed group %s",
@@ -363,10 +374,8 @@ bool enqueueGroup(const char* groupName, const FeedSample* samples,
     return false;
   }
   if (!groupName || !groupName[0] || strlen(groupName) > kMaxGroupNameLength ||
-      !samples || sampleCount == 0 || sampleCount > kMaxQueuedPublishes ||
-      pending.size() + pendingLogs.size() + sampleCount + 1 >
-          kMaxQueuedPublishes) {
-    Serial.println("AIO ERROR: invalid feed group or publish queue is full");
+      !samples || sampleCount == 0 || sampleCount > kMaxQueuedPublishes) {
+    Serial.println("AIO ERROR: invalid feed group");
     return false;
   }
   for (size_t i = 0; i < sampleCount; ++i) {
@@ -377,13 +386,57 @@ bool enqueueGroup(const char* groupName, const FeedSample* samples,
     }
   }
 
+  std::deque<Publish> changed;
+  std::map<std::string, PublishedValue> newFeeds;
   for (size_t i = 0; i < sampleCount; ++i) {
     char topic[160];
     snprintf(topic, sizeof(topic), "%s/feeds/%s", AIO_USERNAME,
              samples[i].key);
-    pending.push_back({topic, samples[i].value, groupName,
-                       i + 1 == sampleCount, false, false});
+    const std::string* effectiveValue = nullptr;
+    // The latest queued value wins over acknowledged state, including reversions.
+    for (auto it = changed.rbegin(); it != changed.rend(); ++it) {
+      if (it->topic == topic) {
+        effectiveValue = &it->value;
+        break;
+      }
+    }
+    if (!effectiveValue) {
+      for (auto it = pending.rbegin(); it != pending.rend(); ++it) {
+        if (!it->isLog && it->topic == topic) {
+          effectiveValue = &it->value;
+          break;
+        }
+      }
+    }
+    const auto previous = publishedValues.find(topic);
+    if (!effectiveValue && previous != publishedValues.end() &&
+        previous->second.acknowledged) {
+      effectiveValue = &previous->second.value;
+    }
+    if (effectiveValue && *effectiveValue == samples[i].value) {
+      continue;
+    }
+    changed.push_back({topic, samples[i].value, groupName, false, false, false});
+    if (previous == publishedValues.end()) {
+      newFeeds.emplace(topic, PublishedValue{});
+    }
   }
+  if (changed.empty()) {
+    Serial.printf("AIO: feed group %s unchanged; nothing queued\n", groupName);
+    return true;
+  }
+  if (pending.size() + pendingLogs.size() + changed.size() + 1 >
+      kMaxQueuedPublishes) {
+    Serial.println("AIO ERROR: publish queue is full; feed group rejected");
+    return false;
+  }
+  if (publishedValues.size() + newFeeds.size() > kMaxTrackedFeeds) {
+    Serial.println("AIO ERROR: change cache is full; feed group rejected");
+    return false;
+  }
+  changed.back().isGroupEnd = true;
+  publishedValues.insert(newFeeds.begin(), newFeeds.end());
+  pending.insert(pending.end(), changed.begin(), changed.end());
   return true;
 }
 

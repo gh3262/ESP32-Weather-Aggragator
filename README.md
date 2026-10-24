@@ -74,18 +74,46 @@ acknowledgement arrives within 30 seconds, the application stops and destroys
 the client (clearing its old outbox) before reconnecting and retrying the
 uncompleted sample. QoS 1 is at-least-once delivery, not exactly-once: if the
 broker stored a value but its acknowledgement was lost, retrying can create a
-duplicate data point. Group success means every sample received a broker
-acknowledgement, not that the group was atomic or that Adafruit IO performed
+duplicate data point. Group success means every newly queued changed sample
+received a broker acknowledgement, not that the group was atomic or that Adafruit IO performed
 application-level validation. Account error/throttle notices are reported on
 serial.
 
-After every sample in a group is acknowledged, one concise success entry for
-the group is queued to `aggregator.log` (the replacement for the old `rt` log
+After every changed sample queued for a group is acknowledged, one concise
+success entry for the group is queued to `aggregator.log` (the replacement for the old `rt` log
 feed). MQTT connection and publish failures are also reported there when
 possible. Detailed development and status output remains on USB serial and is
 not forwarded to the log feed. Weather-group selection, failure retry policy,
 and log message format can be refined as provider groups are added. Create the
 `aggregator.log` feed in Adafruit IO before enabling publishing.
+
+### Change detection
+
+`enqueueGroup()` compares the final formatted value byte-for-byte for each feed.
+Adapters must normalize units and precision first; `"72"` and `"72.0"` are
+different values. The last acknowledged value is recorded only after the
+matching MQTT acknowledgement, never when a sample is accepted or sent.
+
+The newest queued/in-flight value for the feed takes precedence over its
+acknowledged value when filtering a new submission. Identical repeats are
+skipped, but genuine transitions stay in FIFO order, including a return to an
+earlier value (for example, `72 -> 73 -> 72`). Updates are not coalesced.
+This also applies to repeated feed keys within one submitted group.
+
+A completely unchanged group returns `true` without using queue space or
+creating a success entry in `aggregator.log`; it is reported only on serial.
+Mixed groups queue only changed samples and log completion after the last of
+those samples is acknowledged. Invalid inputs or insufficient queue/cache
+space reject the entire group without mutating the queue or change cache.
+The RAM-only cache tracks up to 256 distinct feed keys per boot, with no
+eviction. A full cache rejects previously unseen keys explicitly, but existing
+keys can still update. Reboot clears it, so the initial values are sent again.
+Periodic heartbeat publishing is intentionally deferred. Internal log events
+are not change-filtered.
+
+The current API supports ordinary, undated feed values only. Timestamped
+historical data will need timestamp-aware payloads and cache identities when
+that provider integration is added; it must not use this undated path.
 
 ### Planned weather collection and publishing
 
@@ -113,11 +141,10 @@ The collection and publishing flow will be:
 
 The change-detection key for ordinary feeds is the feed. Historical feeds need
 to include the sample timestamp (for example, the date) so updates to different
-days are tracked independently. Unchanged values should also be republished
-periodically as a heartbeat, so dashboards do not remain stale indefinitely.
-The heartbeat interval and whether change state is persisted across reboots
-remain design choices; an in-memory cache would resend values after reboot,
-while persistent state could reduce that startup burst.
+days are tracked independently. A future heartbeat can republish unchanged
+values periodically so dashboards do not remain stale indefinitely. The
+current implementation deliberately uses an in-memory cache and no heartbeat;
+the freshness policy will be chosen alongside provider integration.
 
 Fetch timing still matters for freshness, and queue pacing still matters when
 many values change together (such as at startup or when a forecast updates).
@@ -330,8 +357,9 @@ Providers must identify source units explicitly and avoid reconverting values
 already in the desired units. A provider's missing-field policy, unit metadata,
 output precision, and text formatting belong in its adapter.
 
-These helpers are not yet used by the bring-up firmware. Feed change detection,
-UTC/freshness handling, provider descriptions, averaging, and pressure trends will
+These helpers are not yet used by the bring-up firmware. Feed change detection
+is implemented in the publisher. UTC/freshness handling, provider descriptions,
+averaging, and pressure trends will
 be added with the relevant collection/publishing infrastructure.
 
 ### Running transformation tests without hardware
@@ -380,6 +408,11 @@ reconnect ownership, timeout recovery and cleanup failures, enqueue failures,
 atomic rejection of invalid/full groups, network/time startup gating, and
 32-bit timer wraparound. These tests do not verify real broker delivery or TLS;
 that still requires an on-board run.
+
+Change-detection cases cover first values, duplicates before send and in flight,
+acknowledged repeats, mixed changed/unchanged groups, FIFO reversions, repeated
+keys within one group, formatting differences, retry state, cache capacity,
+atomic rejection, and initial sends after a simulated reboot.
 
 ## Wiring
 
