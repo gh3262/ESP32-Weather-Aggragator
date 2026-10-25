@@ -19,7 +19,14 @@ enum esp_mqtt_event_id_t {
 
 struct esp_mqtt_error_codes_t {
   int error_type;
+  esp_err_t esp_tls_last_esp_err;
+  int esp_tls_stack_err;
+  int esp_tls_cert_verify_flags;
+  int esp_transport_sock_errno;
+  int connect_return_code;
 };
+constexpr int MQTT_ERROR_TYPE_TCP_TRANSPORT = 1;
+constexpr int MQTT_ERROR_TYPE_CONNECTION_REFUSED = 2;
 
 struct esp_mqtt_event_t {
   esp_mqtt_client_handle_t client;

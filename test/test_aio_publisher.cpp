@@ -18,6 +18,8 @@ struct tm* testLocalTime(const time_t*, struct tm*);
 
 TestSerial Serial;
 uint32_t testMillis = 0;
+TestEsp ESP;
+TestWiFi WiFi;
 
 time_t testTime(time_t*) { return 1792857600; }
 struct tm* testLocalTime(const time_t*, struct tm* local) {
@@ -66,7 +68,7 @@ void tick(uint32_t now) {
   aio_publisher::update(true, true, now);
 }
 
-void reset(uint32_t now = 0) {
+void reset(uint32_t now = 0, bool diagnostics = false) {
   using namespace aio_publisher;
   pending.clear();
   pendingLogs.clear();
@@ -85,6 +87,7 @@ void reset(uint32_t now = 0) {
   weatherkit_current::assembly.clear();
   weatherkit_current::assembling = false;
   weatherkit_current::receiveFailures = 0;
+  weatherkit_current::discardedTotal = 0;
   weatherkit_current::waitingSamples.clear();
   weatherkit_current::retryPending = false;
   client = nullptr;
@@ -103,6 +106,19 @@ void reset(uint32_t now = 0) {
   publishProblem = false;
   publishTimedOut = false;
   unavailableSince = 0;
+  mqttDiagnostics = MqttDiagnostics{};
+  reportedErrors = 0;
+  acknowledgedPublishes = 0;
+  acknowledgementTimeouts = 0;
+  enqueueFailures = 0;
+  rejectedGroups = 0;
+  droppedLogs = 0;
+  queueHighWater = 0;
+  pendingDiagnostic.clear();
+  startupDiagnosticPending = diagnostics;
+  recoveryDiagnosticPending = false;
+  diagnosticRecoveryCount = 0;
+  diagnosticCoalesced = 0;
   weatherkit_current::healthStarted = false;
   weatherkit_current::everConnected = false;
   for (auto& source : weatherkit_current::sources) {
@@ -115,6 +131,7 @@ void reset(uint32_t now = 0) {
   stops = destroys = subscriptionCalls = 0;
   rejectPublish = rejectSubscription = rejectStop = rejectDestroy = false;
   Serial.output.clear();
+  testMillis = now;
   begin();
   tick(now);
   event(MQTT_EVENT_CONNECTED);
@@ -124,6 +141,21 @@ void reset(uint32_t now = 0) {
 void acknowledge() {
   assert(!sent.empty());
   event(MQTT_EVENT_PUBLISHED, sent.back().id);
+}
+
+void drain() {
+  for (size_t i = 0; i < 100 &&
+       (!aio_publisher::pending.empty() || !aio_publisher::pendingLogs.empty() ||
+        !aio_publisher::pendingDiagnostic.empty()); ++i) {
+    tick(clockMs + 2000);
+    if (aio_publisher::outstandingMessageId != 0) {
+      acknowledge();
+      tick(clockMs + 1);
+    }
+  }
+  assert(aio_publisher::pending.empty());
+  assert(aio_publisher::pendingLogs.empty());
+  assert(aio_publisher::pendingDiagnostic.empty());
 }
 }
 
@@ -178,7 +210,7 @@ int main() {
   assert(client == nullptr);
 
   reset();
-  assert(subscribedTopics.size() == 6);
+  assert(subscribedTopics.size() == 7);
   assert(subscribedTopics[2] ==
          "test-user/integration/weather/test-location/current");
   assert(subscribedTopics[3] ==
@@ -187,6 +219,8 @@ int main() {
          "test-user/integration/weather/test-location/forecast_minutes_30");
   assert(subscribedTopics[5] ==
          "test-user/integration/weather/test-location/forecast_hours_1");
+  assert(subscribedTopics[6] ==
+         "test-user/integration/weather/test-location/forecast_hours_2");
   assert(enqueueGroup("current", samples, 2));
   tick(1999);
   assert(sent.empty());
@@ -245,7 +279,7 @@ int main() {
   tick(2001);
   event(MQTT_EVENT_CONNECTED);
   tick(4000);
-  assert(subscribedTopics.size() == 12);
+  assert(subscribedTopics.size() == 14);
   assert(sent.size() == 1 && outstandingMessageId == originalId);
   event(MQTT_EVENT_PUBLISHED, originalId);
   tick(4001);
@@ -319,7 +353,7 @@ int main() {
   rejectSubscription = true;
   subscriptionCalls = 0;
   event(MQTT_EVENT_CONNECTED);
-  assert(subscriptionCalls == 6);
+  assert(subscriptionCalls == 7);
   tick(1);
   assert(Serial.output.find("subscription failed") != std::string::npos);
   for (const auto& subscription : weatherSubscriptions) {
@@ -609,6 +643,31 @@ int main() {
   assert(pending.empty() && pendingLogs.empty() && sent.size() == 5);
 
   reset();
+  pending.clear();
+  pendingLogs.clear();
+  const std::string hour2Json = R"({"forecastStart":"2026-10-24T19:00:00Z",
+    "daylight":false,"visibility":10000,"temperature":20})";
+  minuteEvent(4, hour2Json);
+  tick(1);
+  assert(pending.size() == 4);
+  drain();
+  assert(sent[0].topic == "test-user/feeds/hours2start");
+  assert(sent[1].value == "It will be dark");
+  assert(sent[2].value == "68.0" && sent[3].value == "6");
+  assert(sent[4].value ==
+         "20261024110442 Sent feed group WeatherKit hour2 - Number Updated: 4");
+  minuteEvent(4, hour2Json);
+  tick(clockMs + 1);
+  assert(pending.empty() && sent.size() == 5);
+  minuteEvent(4, R"({"temperature":21})");
+  tick(clockMs + 1);
+  drain();
+  assert(sent[5].topic == "test-user/feeds/hours2temperature");
+  assert(sent[5].value == "69.8");
+  assert(sent[6].value ==
+         "20261024110442 Sent feed group WeatherKit hour2 - Number Updated: 1");
+
+  reset();
   assert(health(0) == HealthStatus::Amber);
   tick(2000);
   acknowledge();
@@ -686,6 +745,235 @@ int main() {
   assert(health(29000) == HealthStatus::Amber);
   tick(29001);
   assert(health(29001) == HealthStatus::Red);
+
+  reset(0, true);
+  assert(pending.size() == 2);
+  assert(pending.back().isDiagnostic);
+  const std::string startup = pending.back().value;
+  assert(startup.find("20261024110442 startup up_s=0 reset=1") == 0);
+  assert(startup.find("mqtt=up c/d/e=1/0/0") != std::string::npos);
+  assert(startup.find("forecast_hours_1=-") != std::string::npos);
+  assert(startup.find("forecast_hours_2=-") != std::string::npos);
+  assert(startup.find("wifi=up rssi=-55 heap=200000 min=180000") != std::string::npos);
+  assert(startup.size() <= 1024);
+  drain();
+  assert(sent.size() == 2);
+  assert(sent[1].topic == "test-user/feeds/aggregator.diag");
+  assert(sent[1].value == startup);
+  assert(sent[1].at - sent[0].at >= 2000);
+  assert(acknowledgedPublishes == 2);
+  assert(publishedValues.empty());
+  assert(Serial.output.find("aggregator.diag published") != std::string::npos);
+  tick(kDiagnosticIntervalMs - 1);
+  assert(sent.size() == 2);
+  tick(kDiagnosticIntervalMs);
+  assert(sent.size() == 3);
+  assert(sent.back().value.find(" periodic ") != std::string::npos);
+  acknowledge();
+  tick(kDiagnosticIntervalMs + 1);
+  assert(pending.empty() && pendingLogs.empty());
+
+  reset(0, true);
+  drain();
+  tick(10000);
+  event(MQTT_EVENT_DISCONNECTED);
+  tick(12000);
+  event(MQTT_EVENT_CONNECTED);
+  tick(12001);
+  assert(mqttDiagnostics.connects == 2 && mqttDiagnostics.disconnects == 1);
+  assert(mqttDiagnostics.lastOutageMs == 2000);
+  assert(recoveryDiagnosticPending);
+  drain();
+  const size_t beforeRecovery = sent.size();
+  tick(kRecoveryDiagnosticCooldownMs - 1);
+  assert(sent.size() == beforeRecovery);
+  tick(kRecoveryDiagnosticCooldownMs);
+  assert(sent.back().topic == "test-user/feeds/aggregator.diag");
+  assert(sent.back().value.find(" recovery ") != std::string::npos);
+  assert(sent.back().value.find("outage_s current/last/max=0/2/2") != std::string::npos);
+  acknowledge();
+  tick(kRecoveryDiagnosticCooldownMs + 1);
+  // Even transitions occurring entirely between loop updates are counted.
+  event(MQTT_EVENT_DISCONNECTED);
+  testMillis += 1000;
+  event(MQTT_EVENT_CONNECTED);
+  tick(testMillis);
+  assert(mqttDiagnostics.connects == 3 && mqttDiagnostics.disconnects == 2);
+  assert(mqttDiagnostics.lastOutageMs == 1000);
+  assert(mqttDiagnostics.longestOutageMs == 2000);
+  assert(recoveryDiagnosticPending);
+  drain();
+  const size_t beforeCooldown = sent.size();
+  tick(119999);
+  assert(sent.size() == beforeCooldown);
+  tick(120000);
+  assert(sent.back().value.find(" recovery ") != std::string::npos);
+  assert(sent.back().value.find("c/d/e=3/2/0") != std::string::npos);
+
+  reset();
+  esp_mqtt_error_codes_t details = {};
+  details.error_type = MQTT_ERROR_TYPE_TCP_TRANSPORT;
+  details.esp_tls_last_esp_err = 32774;
+  details.esp_tls_stack_err = -29184;
+  details.esp_tls_cert_verify_flags = 8;
+  details.esp_transport_sock_errno = 119;
+  esp_mqtt_event_t errorEvent = {};
+  errorEvent.error_handle = &details;
+  callback(nullptr, nullptr, MQTT_EVENT_ERROR, &errorEvent);
+  callback(nullptr, nullptr, MQTT_EVENT_ERROR, &errorEvent);
+  assert(mqttDiagnostics.errors == 2);
+  assert(Serial.output.find("errno=119") == std::string::npos);
+  details.esp_transport_sock_errno = 0;
+  tick(1);
+  assert(Serial.output.find("tls=-29184 cert=0x8 errno=119") != std::string::npos);
+  assert(captureDiagnostic("periodic", true, 1001, diagnosticSnapshot()));
+  assert(pendingDiagnostic.find("type=1 esp=32774 tls=-29184 cert=0x8 errno=119") !=
+         std::string::npos);
+  assert(pendingDiagnostic.find("age_s=1\nwk_drop=") != std::string::npos);
+  details.error_type = MQTT_ERROR_TYPE_CONNECTION_REFUSED;
+  details.connect_return_code = 5;
+  callback(nullptr, nullptr, MQTT_EVENT_ERROR, &errorEvent);
+  tick(2);
+  assert(Serial.output.find("MQTT connection refused: code=5") != std::string::npos);
+  errorEvent.error_handle = nullptr;
+  callback(nullptr, nullptr, MQTT_EVENT_ERROR, &errorEvent);
+  tick(3);
+  assert(mqttDiagnostics.errors == 4);
+  assert(Serial.output.find("MQTT error: no details") != std::string::npos);
+  assert(captureDiagnostic("periodic", true, 3, diagnosticSnapshot()));
+  assert(pendingDiagnostic.find("details=no type=-1 esp=0 tls=0 cert=0x0 errno=0") !=
+         std::string::npos);
+
+  reset(0, true);
+  tick(2000);
+  acknowledge();
+  tick(2001);
+  tick(4000);
+  assert(pending.front().isDiagnostic && outstandingMessageId != 0);
+  const std::string inFlight = pending.front().value;
+  tick(34000);
+  assert(acknowledgementTimeouts == 1);
+  assert(client == nullptr);
+  assert(pending.front().value == inFlight);
+  tick(34001);
+  event(MQTT_EVENT_CONNECTED);
+  tick(34002);
+  assert(sent.back().value == inFlight);
+  assert(captureDiagnostic("recovery", true, 34002, diagnosticSnapshot()));
+  assert(pending.front().value == inFlight);
+  assert(pendingDiagnostic.find("timeout=1") != std::string::npos);
+  assert(captureDiagnostic("periodic", true, 34002, diagnosticSnapshot()));
+  assert(diagnosticCoalesced == 1);
+  acknowledge();
+  tick(34003);
+  drain();
+  assert(publishedValues.empty());
+
+  reset();
+  pending.clear();
+  pendingLogs.clear();
+  std::vector<FeedSample> fullGroup(63, {"weather.temp", "new"});
+  for (size_t i = 0; i < fullGroup.size(); ++i) {
+    fullGroup[i].value = i % 2 ? "alternate" : "new";
+  }
+  assert(enqueueGroup("full", fullGroup.data(), fullGroup.size()));
+  queueLog("fills last reserved slot");
+  assert(queueHighWater == 64);
+  assert(!enqueueGroup("full", samples, 2));
+  assert(rejectedGroups == 1);
+  assert(captureDiagnostic("periodic", true, 0, diagnosticSnapshot()));
+  updateDiagnostics(true);
+  assert(!pendingDiagnostic.empty() && pending.size() == 63);
+  for (size_t i = pendingLogs.size(); i < kMaxLogEntries; ++i) {
+    queueLog("backlog");
+  }
+  queueLog("overflow");
+  assert(droppedLogs == 1);
+  event(MQTT_EVENT_DISCONNECTED);
+  tick(kDiagnosticIntervalMs);
+  assert(!pendingDiagnostic.empty());
+  const size_t queueDuringOutage = pending.size();
+  tick(kDiagnosticIntervalMs * 2);
+  assert(pending.size() == queueDuringOutage);
+  assert(diagnosticCoalesced >= 2);
+  assert(pendingDiagnostic.find("mqtt=down") != std::string::npos);
+  assert(pendingDiagnostic.find("log_drop=2") != std::string::npos);
+  assert(pendingDiagnostic.size() <= 1024);
+  event(MQTT_EVENT_CONNECTED);
+  tick(kDiagnosticIntervalMs * 2 + 1);
+  drain();
+  bool deliveredDiagnostic = false;
+  for (const auto& publication : sent) {
+    if (publication.topic == "test-user/feeds/aggregator.diag") {
+      deliveredDiagnostic = true;
+      assert(publication.value.size() <= 1024);
+    }
+  }
+  assert(deliveredDiagnostic);
+  for (size_t i = 1; i < sent.size(); ++i) {
+    assert(sent[i].at - sent[i - 1].at >= 2000);
+  }
+
+  reset();
+  MqttDiagnostics maximum;
+  maximum.connects = maximum.disconnects = maximum.errors = UINT32_MAX;
+  maximum.errorDetails = true;
+  maximum.errorType = maximum.espError = maximum.tlsError =
+      maximum.socketError = maximum.refusalCode = INT32_MIN;
+  maximum.certFlags = -1;
+  maximum.lastOutageMs = maximum.longestOutageMs = UINT32_MAX;
+  acknowledgedPublishes = acknowledgementTimeouts = enqueueFailures =
+      rejectedGroups = droppedLogs = diagnosticCoalesced = UINT32_MAX;
+  for (auto& source : weatherkit_current::sources) {
+    source.received = true;
+    source.lastReceivedAt = 0;
+  }
+  assert(captureDiagnostic("periodic", false, UINT32_MAX, maximum));
+  assert(pendingDiagnostic.size() <= 1024);
+  const std::string previousSummary = pendingDiagnostic;
+  const std::string excessiveReason(1024, 'x');
+  assert(!captureDiagnostic(excessiveReason.c_str(), false, UINT32_MAX, maximum));
+  assert(pendingDiagnostic == previousSummary);
+  assert(Serial.output.find("exceeds 1024 bytes") != std::string::npos);
+
+  reset(0, true);
+  assert(captureDiagnostic("periodic", true, 0, diagnosticSnapshot()));
+  assert(pending.size() == 1 && pending.front().isLog);
+  assert(diagnosticCoalesced == 1);
+  assert(pendingDiagnostic.find("diag_coalesced=1") != std::string::npos);
+  drain();
+  assert(sent.size() == 2);
+
+  reset();
+  rejectPublish = true;
+  tick(2000);
+  tick(4000);
+  assert(enqueueFailures == 2);
+  assert(sent.empty());
+
+  reset(0, true);
+  drain();
+  testMillis = 60000;
+  event(MQTT_EVENT_DISCONNECTED);
+  testMillis = 61000;
+  details.error_type = MQTT_ERROR_TYPE_TCP_TRANSPORT;
+  errorEvent.error_handle = &details;
+  callback(nullptr, nullptr, MQTT_EVENT_ERROR, &errorEvent);
+  testMillis = 62000;
+  event(MQTT_EVENT_CONNECTED);
+  // A callback timestamp can be newer than the loop's initial time sample.
+  update(true, true, 59999);
+  assert(pending.back().isDiagnostic);
+  assert(pending.back().value.find(" recovery ") != std::string::npos);
+  assert(pending.back().value.find("outage_s current/last/max=0/2/2") != std::string::npos);
+  assert(pending.back().value.find("refusal=0 age_s=1") != std::string::npos);
+
+  reset(UINT32_MAX - 1000, true);
+  drain();
+  tick(UINT32_MAX - 1000 + kDiagnosticIntervalMs - 1);
+  assert(sent.size() == 2);
+  tick(UINT32_MAX - 1000 + kDiagnosticIntervalMs);
+  assert(sent.back().value.find(" periodic ") != std::string::npos);
 
   puts("AIO publisher tests passed.");
 }

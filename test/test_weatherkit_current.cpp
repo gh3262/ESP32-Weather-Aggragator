@@ -29,6 +29,7 @@ void reset() {
   expectedTotal = 0;
   assembling = false;
   receiveFailures = 0;
+  discardedTotal = 0;
   retryPending = false;
   waitingSamples.clear();
   lastRetryAt = 0;
@@ -149,10 +150,10 @@ int main() {
   deliver(oversized);
   update(0);
   assert(submissions == 0 && Serial.output.find("discarded") != std::string::npos);
-  for (size_t i = 0; i < 5; ++i) {
+  for (size_t i = 0; i < kMaxPendingSnapshots + 1; ++i) {
     deliver(payload);
   }
-  assert(incoming.size() == 4);
+  assert(incoming.size() == kMaxPendingSnapshots);
   update(1);
   assert(Serial.output.find("discarded") != std::string::npos);
 
@@ -289,6 +290,25 @@ int main() {
   assert(submissions == hourlySubmissions);
 
   reset();
+  expectedGroup = "WeatherKit hour2";
+  receive(Group::Hour2, hourly.data(), 11, 0, hourly.size());
+  receive(Group::None, hourly.data() + 11, hourly.size() - 11, 11, hourly.size());
+  update(0);
+  std::map<std::string, std::string> expectedHour2;
+  for (const auto& sample : expectedHourly) {
+    expectedHour2.emplace("hours2" + sample.first.substr(6), sample.second);
+  }
+  assert(submitted == expectedHour2 && submitted.size() == 21);
+  deliver(R"({"daylight":false,"temperature":-10,"snowfallAmount":0})", Group::Hour2);
+  update(1);
+  assert(submitted.at("hours2daylight") == "It will be dark");
+  assert(submitted.at("hours2temperature") == "14.0");
+  const size_t hour2Submissions = submissions;
+  deliver(R"({"daylight":1,"precipitationChance":2,"visibility":-1})", Group::Hour2);
+  update(2);
+  assert(submissions == hour2Submissions);
+
+  reset();
   assert(health(false, 0) == HealthStatus::Amber);
   assert(health(false, 29999) == HealthStatus::Amber);
   assert(health(false, 30000) == HealthStatus::Red);
@@ -318,19 +338,19 @@ int main() {
   }
   acceptGroup = false;
   expectedGroup = "WeatherKit current";
-  // Refresh three topics, leaving hour1 stale.
+  // Refresh the other topics, leaving hour2 stale.
   testMillis = 301001;
   for (const auto& source : sources) {
-    if (source.group != Group::Hour1) {
+    if (source.group != Group::Hour2) {
       deliver(validHealth, source.group);
     }
   }
   update(301001);
   assert(health(true, 301001) == HealthStatus::Red);
-  deliver("not json", Group::Hour1);
+  deliver("not json", Group::Hour2);
   update(301002);
   assert(health(true, 301002) == HealthStatus::Red);
-  deliver(validHealth, Group::Hour1);
+  deliver(validHealth, Group::Hour2);
   update(301003);
   assert(health(true, 301003) == HealthStatus::Green);
   // Disabled groups do not hold the indicator amber.
@@ -341,8 +361,10 @@ int main() {
   sources[3] = Source(Group::Hour1, disabledHealth, 1);
   assert(health(true, 0) == HealthStatus::Amber);
   acceptGroup = false;
-  for (size_t i = 0; i < 3; ++i) {
-    deliver(validHealth, sources[i].group);
+  for (const auto& source : sources) {
+    if (source.group != Group::Hour1) {
+      deliver(validHealth, source.group);
+    }
   }
   update(0);
   assert(health(true, 0) == HealthStatus::Green);
@@ -358,13 +380,13 @@ int main() {
   }
   update(301000);
   assert(health(true, 301000) == HealthStatus::Red);
-  Source savedSources[] = {sources[0], sources[1], sources[2], sources[3]};
+  const std::vector<Source> savedSources(std::begin(sources), std::end(sources));
   for (auto& source : sources) {
     source.mappings = disabledHealth;
     source.count = 1;
   }
   assert(health(true, 301000) == HealthStatus::Off);
-  for (size_t i = 0; i < 4; ++i) {
+  for (size_t i = 0; i < savedSources.size(); ++i) {
     sources[i] = savedSources[i];
   }
 
@@ -380,6 +402,33 @@ int main() {
   assert(health(true, nearWrap + 179999) == HealthStatus::Green);
   assert(health(true, nearWrap + 180000) == HealthStatus::Amber);
   assert(health(true, nearWrap + 300000) == HealthStatus::Red);
+
+  reset();
+  assert(discardedMessages() == 0);
+  receive(Group::Current, payload, 0, 0, 4097);
+  assert(discardedMessages() == 1);
+  update(0);
+  assert(discardedMessages() == 1);
+  deliver("not JSON");
+  update(1);
+  assert(discardedMessages() == 2);
+  deliver(R"({"temperature":null})");
+  update(2);
+  assert(discardedMessages() == 3);
+  testMillis = 1000;
+  deliver(payload);
+  update(1000);
+  auto currentStatus = sourceStatus(Group::Current, 2999);
+  assert(currentStatus.enabled && currentStatus.received && currentStatus.ageSeconds == 1);
+  testMillis = 3000;
+  deliver(payload);
+  update(3000);
+  assert(sourceStatus(Group::Current, 3000).ageSeconds == 0);
+  assert(!sourceStatus(Group::Minutes5, 3000).received);
+  assert(discardedMessages() == 3);
+  receive(Group::Current, payload, 10, 0, strlen(payload));
+  disconnected();
+  assert(discardedMessages() == 4);
 
   puts("WeatherKit current, minute, and hour1 tests passed.");
 }

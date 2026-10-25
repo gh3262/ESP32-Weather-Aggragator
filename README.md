@@ -52,7 +52,7 @@ PlatformIO/Arduino firmware for a Seeed Studio XIAO ESP32-S3 with an Adafruit
   pixel initialization and updates during Wi-Fi diagnostics.
 
 The main firmware receives WeatherKit current conditions, 5-/30-minute
-forecasts, and hour-1 forecasts through Adafruit IO MQTT and publishes changed
+forecasts, and hour-1/hour-2 forecasts through Adafruit IO MQTT and publishes changed
 values through the shared paced queue. Other providers, other hourly horizons,
 and daily forecast adapters are not implemented yet.
 [The feed catalog](WEATHER_FEED_CATALOG.csv) remains the migration reference.
@@ -63,7 +63,7 @@ The application starts its TLS-verified MQTT connection after Wi-Fi and NTP are
 ready. Feed samples are submitted in named groups; the queue publishes one
 sample at a time, waits for its QoS 1 acknowledgement, and spaces publish
 attempts by at least two seconds. This caps new application publishes at 30
-per minute, including entries sent to `aggregator.log`, leaving account
+per minute, including entries sent to `aggregator.log` and `aggregator.diag`, leaving account
 capacity for other feeds. MQTT's QoS 1 retransmissions can repeat a publish
 after a connection failure; they are not new application queue entries.
 The queue is bounded and rejects new groups when it
@@ -99,6 +99,74 @@ The prefix uses the
 NTP-synchronized clock and configured timezone/DST rules when the event enters
 the log queue, not when it is eventually published. Events before synchronization
 use `TIME_UNSYNCED` instead. Detailed serial messages are unchanged.
+
+### Main-firmware soak-test diagnostics
+
+Create `aggregator.diag` externally in Adafruit IO. The main firmware sends a
+compact snapshot there after its first MQTT connection, every 30 minutes, and
+after recovery from an MQTT outage. Recovery snapshots have a 60-second
+cooldown since the last snapshot; rapid reconnects are counted and combined
+into a deferred recovery snapshot while connected. Existing feed history is
+not cleared. The isolated WeatherKit diagnostic has its own summary format.
+
+Each snapshot is at most 1024 bytes and begins with local capture time, a
+`startup` / `periodic` / `recovery` label, uptime in seconds (`up_s`), and the
+ESP-IDF numeric reset reason (`reset`: commonly 1=power-on, 3=software,
+4=panic, 5=interrupt watchdog, 6=task watchdog, 7=other watchdog, 9=brownout).
+It includes:
+
+- `mqtt`, `c/d/e`: connection state and cumulative connections, losses of an
+  established connection, and MQTT error events since boot. Callback counters
+  include reconnects that occur between main-loop updates.
+- `outage_s current/last/max`: current outage age, last completed outage, and
+  longest outage, including an ongoing outage. Initial connection waiting is
+  not an outage.
+- `ack`, `timeout`, `enq_fail`, `group_reject`: matching publish acknowledgements
+  (weather, operational logs, and diagnostics), acknowledgement-timeout/reset
+  attempts, failed MQTT publish enqueues, and group rejections due to queue/cache
+  capacity. A retained group's repeated submission attempts count separately.
+- `queue`, `log_wait`, `high`: current shared publish queue size (including the
+  in-flight head), operational logs waiting for promotion, and high-water mark
+  of their combined size. The publish queue is bounded at 64 and the separate
+  operational-log waiting queue at 16.
+- `log_drop`, `diag_coalesced`: operational logs dropped when their waiting
+  queue is full, and obsolete unsent diagnostic snapshots replaced by newer
+  ones.
+- `inflight_id`, `age_s`: current MQTT publish ID and time awaiting its
+  acknowledgement.
+- `last_error`: whether SDK details were supplied, MQTT error type, ESP/TLS
+  error codes, certificate flags, socket errno, broker refusal code, and age
+  in seconds. Only fields relevant to the last error type are populated.
+  `c/d/e`'s error count of zero means no MQTT error has been observed.
+- `wk_drop`: cumulative discarded WeatherKit messages (assembly/receive-queue
+  failures and malformed or wholly unusable payloads). A payload with some
+  valid fields still counts as usable, not discarded.
+- Per-source `age_s`: time since the last usable payload, including unchanged
+  payloads; `-` means no usable data yet, `off` means the source or all of its
+  output mappings are disabled.
+- Wi-Fi state, RSSI in dBm, free heap, and minimum free heap in bytes.
+
+Snapshots share the existing two-second publish pacing and QoS 1 acknowledgement
+path; they do not generate feed-group completion logs or enter the change cache.
+One diagnostic can occupy the publish queue, plus one latest snapshot waiting
+outside it. New snapshots replace older unsent diagnostics, never an in-flight
+message or queued weather changes. Consequently a long outage cannot create
+an unbounded diagnostic backlog. Snapshot time, counters, and ages describe
+capture, not eventual delivery; the snapshot's own acknowledgement appears in
+a later snapshot.
+
+MQTT errors now include available TLS/socket or broker-refusal details in
+`aggregator.log` and serial, emitted from the main loop rather than the MQTT
+callback. Several errors before one loop update are counted individually, but
+only the most recent error details are logged. Publish-timeout logs also include
+the message ID and topic.
+
+All counters and queues remain RAM-only and reset on reboot. Summaries improve
+visibility after a recoverable outage, but cannot preserve unsent information
+through power loss. For board validation, check one startup summary arrives,
+compare its timestamp/uptime and source ages with serial, then verify a recovery
+snapshot after a reconnect and a periodic snapshot after 30 minutes. Diagnostic
+publishes must remain at least two seconds apart from other new publishes.
 
 ### Change detection
 
@@ -178,7 +246,8 @@ text are independent rows and can be enabled or disabled separately.
 All 20 current outputs and all six minute-forecast outputs are enabled by
 default. `weatherkitMinutes5` and `weatherkitMinutes30` configure their outputs
 independently using the same row format. `weatherkitHour1` independently
-configures 21 enabled hour-1 outputs.
+configures 21 enabled hour-1 outputs; `weatherkitHour2` configures the
+corresponding 21 `hours2*` outputs.
 
 Rebuild, run the adapter/publisher tests, and upload after a configuration
 change. The default-mapping assertions in the adapter tests intentionally
@@ -212,11 +281,11 @@ fields such as the altitude-specific cloud covers may be absent. Each push is
 filtered against queued/acknowledged values; an entirely unchanged push creates
 no publish or log-feed entry. A changed group completes with
 `Sent feed group WeatherKit current - Number Updated: n` in `aggregator.log`.
-Only hour 1 is enabled among hourly topics; daily topics are not subscribed yet.
+Only hours 1 and 2 are enabled among hourly topics; daily topics are not subscribed yet.
 
 MQTT-task delivery assembles messages up to 4096 bytes, then hands complete
-snapshots to the main loop for parsing/publication. Across current, m5, m30, and hour1,
-up to four received
+snapshots to the main loop for parsing/publication. Across current, m5, m30, hour1, and hour2,
+up to five received
 snapshots wait behind one parsed snapshot; new arrivals beyond that limit are
 discarded with a serial error. Invalid/incomplete chunk sequences and oversize
 messages are likewise reported. If the publisher rejects a group, the parsed
@@ -261,15 +330,17 @@ After uploading the main environment, wait for the next MQTT push and look for
 `WeatherKit m5: parsed 3 valid feed samples` and the equivalent m30 message.
 Verify the six existing minute feeds and both completion logs. A startup burst
 of all 26 current/minute values needs roughly 52 seconds, plus logs, to drain;
-arrival order determines which group publishes first. With hour 1 also enabled,
-the startup burst is 47 values, roughly 94 seconds plus logs. Subsequent updates are
+arrival order determines which group publishes first. With hours 1 and 2 also enabled,
+the startup burst is 68 values, roughly 136 seconds plus logs. This exceeds the
+64-entry publish queue; the adapter retains and retries groups as space opens,
+without increasing the publish rate. Subsequent updates are
 change-driven, not forced every five or thirty minutes. Do not run another
 publisher against these same destination feeds.
 
 ### WeatherKit hour-1 forecast
 
-The main MQTT connection also subscribes to `forecast_hours_1`. No other
-hourly horizons are subscribed. Its 21 `hours1*` outputs follow the legacy
+The main MQTT connection subscribes to `forecast_hours_1` and `forecast_hours_2`.
+The hour-1 topic's 21 `hours1*` outputs follow the legacy
 [hour-1 handler](circuitpython/Apple_Weatherkit/f1.py), with independently
 enabled mappings in [feed_config.h](include/feed_config.h).
 
@@ -289,6 +360,21 @@ updates to available `hours1*` feeds, and a log entry such as
 `20261024123000 Sent feed group WeatherKit hour1 - Number Updated: 21`.
 Some source fields may be absent, so the valid count can be lower than 21.
 Unchanged pushes create no publishes or completion logs.
+
+### WeatherKit hour-2 forecast
+
+`forecast_hours_2` uses 21 independently configurable mappings in
+`weatherkitHour2`, following the legacy [hour-2 handler](circuitpython/Apple_Weatherkit/f2.py).
+Fields, conversions, validation, FIFO retries, and change detection match hour 1.
+Visibility is whole miles, correcting the legacy handler's raw-meter output.
+No hour-6/hour-12/hour-24 or daily subscriptions are enabled.
+
+After uploading, expect `WeatherKit hour2: parsed 21 valid feed samples` when all
+fields are present, updates to the existing `hours2*` feeds, and
+`Sent feed group WeatherKit hour2 - Number Updated: 21` in `aggregator.log`.
+Subsequent unchanged messages produce no updates; changed messages log only
+their changed count. The WeatherKit pixel now waits for usable hour-2 data too,
+and `aggregator.diag` includes its age as `forecast_hours_2`.
 
 ### Planned weather collection and publishing
 
@@ -511,7 +597,7 @@ These calls should remain on the main loop task, not interrupt handlers.
 
 AIO and WeatherKit use the same MQTT connection. Pixel 1 reports transport and
 publish acknowledgement health; pixel 2 tracks reception separately for current,
-m5, m30, and hour1. Unchanged valid payloads refresh reception health. Malformed,
+m5, m30, hour1, and hour2. Unchanged valid payloads refresh reception health. Malformed,
 unusable, incomplete, or discarded messages do not. Reception is validated even
 when the output queue is blocked, using the message's actual arrival time.
 Groups with all mappings disabled are excluded. A disabled service's pixel is off.

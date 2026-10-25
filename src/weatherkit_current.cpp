@@ -19,7 +19,7 @@
 namespace weatherkit_current {
 namespace {
 constexpr size_t kMaxPayloadBytes = 4096;
-constexpr size_t kMaxPendingSnapshots = 4;
+constexpr size_t kMaxPendingSnapshots = 5;
 constexpr uint32_t kRetryMs = 2000;
 
 struct Sample {
@@ -61,6 +61,8 @@ Source sources[] = {
      sizeof(feed_config::weatherkitMinutes30) / sizeof(Mapping)},
     {Group::Hour1, feed_config::weatherkitHour1,
      sizeof(feed_config::weatherkitHour1) / sizeof(Mapping)},
+    {Group::Hour2, feed_config::weatherkitHour2,
+     sizeof(feed_config::weatherkitHour2) / sizeof(Mapping)},
 };
 bool healthStarted = false;
 bool everConnected = false;
@@ -73,6 +75,7 @@ const char* groupName(Group group) {
     case Group::Minutes5: return "WeatherKit m5";
     case Group::Minutes30: return "WeatherKit m30";
     case Group::Hour1: return "WeatherKit hour1";
+    case Group::Hour2: return "WeatherKit hour2";
     default: return "WeatherKit unknown";
   }
 }
@@ -85,6 +88,7 @@ Group waitingGroup = Group::None;
 size_t expectedTotal = 0;
 bool assembling = false;
 uint32_t receiveFailures = 0;
+uint32_t discardedTotal = 0;
 uint32_t lastRetryAt = 0;
 bool retryPending = false;
 std::vector<Sample> waitingSamples;
@@ -295,6 +299,7 @@ void update(uint32_t now) {
     std::lock_guard<std::mutex> guard(receiveLock);
     failures = receiveFailures;
     receiveFailures = 0;
+    discardedTotal += failures;
     // Validate reception independently of a blocked output queue.
     for (Snapshot& queued : incoming) {
       if (queued.parsed) {
@@ -303,10 +308,13 @@ void update(uint32_t now) {
       queued.parsed = true;
       for (Source& source : sources) {
         if (source.group == queued.group) {
-          if (parse(queued.payload, queued.samples, source.mappings,
-                    source.count, queued.group) && !queued.samples.empty()) {
+          const bool valid = parse(queued.payload, queued.samples, source.mappings,
+                                   source.count, queued.group);
+          if (valid && !queued.samples.empty()) {
             source.received = true;
             source.lastReceivedAt = queued.receivedAt;
+          } else if (!valid) {
+            ++discardedTotal;
           }
           break;
         }
@@ -357,11 +365,7 @@ HealthStatus health(bool mqttConnected, uint32_t now) {
   bool enabled = false;
   HealthStatus result = HealthStatus::Green;
   for (const Source& source : sources) {
-    bool sourceEnabled = false;
-    for (size_t i = 0; i < source.count; ++i) {
-      sourceEnabled = sourceEnabled || source.mappings[i].enabled;
-    }
-    if (!sourceEnabled) {
+    if (!sourceStatus(source.group, now).enabled) {
       continue;
     }
     enabled = true;
@@ -382,5 +386,25 @@ HealthStatus health(bool mqttConnected, uint32_t now) {
                ? HealthStatus::Red : HealthStatus::Amber;
   }
   return result;
+}
+
+SourceStatus sourceStatus(Group group, uint32_t now) {
+  for (const Source& source : sources) {
+    if (source.group != group) {
+      continue;
+    }
+    bool enabled = false;
+    for (size_t i = 0; i < source.count; ++i) {
+      enabled = enabled || source.mappings[i].enabled;
+    }
+    return {enabled, source.received,
+            source.received ? (now - source.lastReceivedAt) / 1000 : 0};
+  }
+  return {false, false, 0};
+}
+
+uint32_t discardedMessages() {
+  std::lock_guard<std::mutex> guard(receiveLock);
+  return discardedTotal + receiveFailures;
 }
 }

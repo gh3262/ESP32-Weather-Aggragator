@@ -7,7 +7,7 @@
 
 namespace weatherkit_current {
 
-enum class Group { None, Current, Minutes5, Minutes30, Hour1 };
+enum class Group { None, Current, Minutes5, Minutes30, Hour1, Hour2 };
 
 // MQTT-task entry points; parsing and publication stay on the main loop.
 void receive(Group group, const char* data, size_t length,
@@ -16,6 +16,15 @@ void disconnected();
 void update(uint32_t now);
 // Main-loop only. Disabled source groups do not participate in freshness.
 HealthStatus health(bool mqttConnected, uint32_t now);
+
+struct SourceStatus {
+  bool enabled;
+  bool received;
+  uint32_t ageSeconds;
+};
+
+SourceStatus sourceStatus(Group group, uint32_t now);
+uint32_t discardedMessages();
 
 }
 

@@ -3,6 +3,9 @@
 
 #include <Arduino.h>
 #include <mqtt_client.h>
+#include <WiFi.h>
+#include <esp_system.h>
+#include <esp_timer.h>
 
 #include <atomic>
 #include <cctype>
@@ -10,6 +13,7 @@
 #include <cstring>
 #include <deque>
 #include <map>
+#include <mutex>
 #include <string>
 #include <time.h>
 
@@ -35,6 +39,10 @@ constexpr size_t kMaxGroupNameLength = 64;
 constexpr size_t kMaxLogEntries = 16;
 constexpr size_t kMaxTrackedFeeds = 256;
 constexpr char kLogFeed[] = "aggregator.log";
+constexpr char kDiagnosticFeed[] = "aggregator.diag";
+constexpr size_t kMaxDiagnosticBytes = 1024;
+constexpr uint32_t kDiagnosticIntervalMs = 30 * 60 * 1000;
+constexpr uint32_t kRecoveryDiagnosticCooldownMs = 60000;
 constexpr char kBrokerUri[] = "mqtts://io.adafruit.com:8883";
 
 const char kRootCa[] = R"PEM(-----BEGIN CERTIFICATE-----
@@ -69,6 +77,7 @@ struct Publish {
   bool isLog;
   bool failureLogged;
   size_t groupUpdateCount;
+  bool isDiagnostic;
 };
 
 struct PublishedValue {
@@ -103,6 +112,7 @@ WeatherSubscription weatherSubscriptions[] = {
     {"forecast_minutes_5", weatherkit_current::Group::Minutes5},
     {"forecast_minutes_30", weatherkit_current::Group::Minutes30},
     {"forecast_hours_1", weatherkit_current::Group::Hour1},
+    {"forecast_hours_2", weatherkit_current::Group::Hour2},
 };
 bool configured = false;
 bool clockSynchronized = false;
@@ -120,11 +130,74 @@ bool publishProblem = false;
 bool publishTimedOut = false;
 uint32_t unavailableSince = 0;
 
+struct MqttDiagnostics {
+  uint32_t connects = 0;
+  uint32_t disconnects = 0;
+  uint32_t errors = 0;
+  bool connected = false;
+  bool outageActive = false;
+  uint32_t outageAt = 0;
+  uint32_t lastOutageMs = 0;
+  uint32_t longestOutageMs = 0;
+  bool errorDetails = false;
+  int errorType = 0;
+  int espError = 0;
+  int tlsError = 0;
+  int certFlags = 0;
+  int socketError = 0;
+  int refusalCode = 0;
+  uint32_t errorAt = 0;
+};
+std::mutex diagnosticLock;
+MqttDiagnostics mqttDiagnostics;
+uint32_t reportedErrors = 0;
+uint32_t acknowledgedPublishes = 0;
+uint32_t acknowledgementTimeouts = 0;
+uint32_t enqueueFailures = 0;
+uint32_t rejectedGroups = 0;
+uint32_t droppedLogs = 0;
+size_t queueHighWater = 0;
+std::string pendingDiagnostic;
+bool startupDiagnosticPending = true;
+bool recoveryDiagnosticPending = false;
+uint32_t diagnosticLastAt = 0;
+uint32_t diagnosticRecoveryCount = 0;
+uint32_t diagnosticCoalesced = 0;
+
+void trackQueueHighWater() {
+  const size_t size = pending.size() + pendingLogs.size();
+  if (size > queueHighWater) {
+    queueHighWater = size;
+  }
+}
+
+void recordDisconnected(uint32_t now) {
+  std::lock_guard<std::mutex> guard(diagnosticLock);
+  if (mqttDiagnostics.connected) {
+    ++mqttDiagnostics.disconnects;
+    mqttDiagnostics.connected = false;
+    mqttDiagnostics.outageActive = true;
+    mqttDiagnostics.outageAt = now;
+  }
+}
+
 void onMqttEvent(void*, esp_event_base_t, int32_t eventId, void* eventData) {
   const esp_mqtt_event_handle_t event =
       static_cast<esp_mqtt_event_handle_t>(eventData);
   switch (static_cast<esp_mqtt_event_id_t>(eventId)) {
     case MQTT_EVENT_CONNECTED: {
+      {
+        std::lock_guard<std::mutex> guard(diagnosticLock);
+        ++mqttDiagnostics.connects;
+        mqttDiagnostics.connected = true;
+        if (mqttDiagnostics.outageActive) {
+          mqttDiagnostics.lastOutageMs = millis() - mqttDiagnostics.outageAt;
+          if (mqttDiagnostics.lastOutageMs > mqttDiagnostics.longestOutageMs) {
+            mqttDiagnostics.longestOutageMs = mqttDiagnostics.lastOutageMs;
+          }
+          mqttDiagnostics.outageActive = false;
+        }
+      }
       mqttConnected.store(true);
       const int errorsId = esp_mqtt_client_subscribe(event->client, errorsTopic, 0);
       const int throttleId =
@@ -141,19 +214,39 @@ void onMqttEvent(void*, esp_event_base_t, int32_t eventId, void* eventData) {
       break;
     }
     case MQTT_EVENT_DISCONNECTED:
+      recordDisconnected(millis());
       mqttConnected.store(false);
       weatherkit_current::disconnected();
       break;
     case MQTT_EVENT_PUBLISHED:
       acknowledgedMessageId.store(event->msg_id);
       break;
-    case MQTT_EVENT_ERROR:
+    case MQTT_EVENT_ERROR: {
+      std::lock_guard<std::mutex> guard(diagnosticLock);
+      ++mqttDiagnostics.errors;
+      mqttDiagnostics.errorAt = millis();
+      mqttDiagnostics.errorDetails = event->error_handle != nullptr;
       if (event->error_handle) {
-        mqttError.store(static_cast<int>(event->error_handle->error_type) + 1);
+        const esp_mqtt_error_codes_t& error = *event->error_handle;
+        mqttDiagnostics.errorType = static_cast<int>(error.error_type);
+        const bool transport = error.error_type == MQTT_ERROR_TYPE_TCP_TRANSPORT;
+        mqttDiagnostics.espError = transport ? error.esp_tls_last_esp_err : 0;
+        mqttDiagnostics.tlsError = transport ? error.esp_tls_stack_err : 0;
+        mqttDiagnostics.certFlags = transport ? error.esp_tls_cert_verify_flags : 0;
+        mqttDiagnostics.socketError = transport ? error.esp_transport_sock_errno : 0;
+        mqttDiagnostics.refusalCode =
+            error.error_type == MQTT_ERROR_TYPE_CONNECTION_REFUSED
+                ? static_cast<int>(error.connect_return_code) : 0;
       } else {
-        mqttError.store(-1);
+        mqttDiagnostics.errorType = -1;
+        mqttDiagnostics.espError = 0;
+        mqttDiagnostics.tlsError = 0;
+        mqttDiagnostics.certFlags = 0;
+        mqttDiagnostics.socketError = 0;
+        mqttDiagnostics.refusalCode = 0;
       }
       break;
+    }
     case MQTT_EVENT_DATA: {
       weatherkit_current::Group group = weatherkit_current::Group::None;
       for (const WeatherSubscription& subscription : weatherSubscriptions) {
@@ -205,13 +298,8 @@ bool validSample(const FeedSample& sample) {
   return true;
 }
 
-void queueLog(const char* message) {
-  if (pendingLogs.size() >= kMaxLogEntries) {
-    Serial.printf("AIO: aggregator.log queue full; dropped log entry: %s\n",
-                  message);
-    return;
-  }
-  char stamp[32] = "TIME_UNSYNCED";
+void formatTimestamp(char (&stamp)[32]) {
+  snprintf(stamp, sizeof(stamp), "TIME_UNSYNCED");
   if (clockSynchronized) {
     const time_t eventTime = time(nullptr);
     struct tm local;
@@ -221,7 +309,19 @@ void queueLog(const char* message) {
       snprintf(stamp, sizeof(stamp), "TIME_UNSYNCED");
     }
   }
+}
+
+void queueLog(const char* message) {
+  if (pendingLogs.size() >= kMaxLogEntries) {
+    ++droppedLogs;
+    Serial.printf("AIO: aggregator.log queue full; dropped log entry: %s\n",
+                  message);
+    return;
+  }
+  char stamp[32];
+  formatTimestamp(stamp);
   pendingLogs.push_back(std::string(stamp) + " " + message);
+  trackQueueHighWater();
 }
 
 void queueMqttLog(const char* message) {
@@ -287,6 +387,7 @@ bool resetClient() {
   client = nullptr;
   clientStopped = false;
   mqttConnected.store(false);
+  recordDisconnected(millis());
   acknowledgedMessageId.store(0);
   outstandingMessageId = 0;
   return true;
@@ -301,8 +402,9 @@ void completePublish() {
   pending.pop_front();
   outstandingMessageId = 0;
 
-  if (published.isLog) {
-    Serial.printf("AIO: aggregator.log published\n");
+  if (published.isLog || published.isDiagnostic) {
+    Serial.printf("AIO: %s published\n",
+                  published.isDiagnostic ? kDiagnosticFeed : kLogFeed);
     return;
   }
   PublishedValue& previous = publishedValues.at(published.topic);
@@ -324,8 +426,142 @@ void promoteLog() {
   const std::string message = pendingLogs.front();
   char topic[160];
   snprintf(topic, sizeof(topic), "%s/feeds/%s", AIO_USERNAME, kLogFeed);
-  pending.push_back({topic, message, "", false, true, false, 0});
+  pending.push_back({topic, message, "", false, true, false, 0, false});
   pendingLogs.pop_front();
+}
+
+MqttDiagnostics diagnosticSnapshot() {
+  std::lock_guard<std::mutex> guard(diagnosticLock);
+  return mqttDiagnostics;
+}
+
+bool captureDiagnostic(const char* reason, bool wifiConnected, uint32_t now,
+                       const MqttDiagnostics& mqtt) {
+  char ages[192] = {};
+  size_t used = 0;
+  for (const WeatherSubscription& subscription : weatherSubscriptions) {
+    const auto source = weatherkit_current::sourceStatus(subscription.group, now);
+    char age[16] = "-";
+    if (subscription.topic.empty() || !source.enabled) {
+      snprintf(age, sizeof(age), "off");
+    } else if (source.received) {
+      snprintf(age, sizeof(age), "%lu", static_cast<unsigned long>(source.ageSeconds));
+    }
+    const int written = snprintf(ages + used, sizeof(ages) - used, "%s=%s ",
+                                 subscription.type, age);
+    if (written < 0 || static_cast<size_t>(written) >= sizeof(ages) - used) {
+      Serial.println("AIO ERROR: diagnostic source ages exceed buffer");
+      return false;
+    }
+    used += static_cast<size_t>(written);
+  }
+  char stamp[32];
+  formatTimestamp(stamp);
+  char summary[kMaxDiagnosticBytes + 1];
+  auto replaceable = pending.end();
+  for (auto it = pending.begin(); it != pending.end(); ++it) {
+    if (it->isDiagnostic &&
+        !(it == pending.begin() && outstandingMessageId != 0)) {
+      replaceable = it;
+      break;
+    }
+  }
+  const uint32_t coalesced = diagnosticCoalesced +
+      (replaceable != pending.end() ? 1 : 0) + (!pendingDiagnostic.empty() ? 1 : 0);
+  const uint32_t outageMs = mqtt.outageActive ? now - mqtt.outageAt : 0;
+  const uint32_t longestMs =
+      outageMs > mqtt.longestOutageMs ? outageMs : mqtt.longestOutageMs;
+  const int written = snprintf(
+      summary, sizeof(summary),
+      "%s %s up_s=%lld reset=%d\n"
+      "mqtt=%s c/d/e=%lu/%lu/%lu outage_s current/last/max=%lu/%lu/%lu\n"
+      "ack=%lu timeout=%lu enq_fail=%lu group_reject=%lu "
+      "queue=%u log_wait=%u high=%u log_drop=%lu diag_coalesced=%lu\n"
+      "inflight_id=%d age_s=%lu\n"
+      "last_error details=%s type=%d esp=%d tls=%d cert=0x%x errno=%d refusal=%d age_s=%lu\n"
+      "wk_drop=%lu age_s %s\n"
+      "wifi=%s rssi=%ld heap=%lu min=%lu",
+      stamp, reason, static_cast<long long>(esp_timer_get_time() / 1000000),
+      static_cast<int>(esp_reset_reason()),
+      mqtt.connected ? "up" : "down",
+      static_cast<unsigned long>(mqtt.connects),
+      static_cast<unsigned long>(mqtt.disconnects),
+      static_cast<unsigned long>(mqtt.errors),
+      static_cast<unsigned long>(outageMs / 1000),
+      static_cast<unsigned long>(mqtt.lastOutageMs / 1000),
+      static_cast<unsigned long>(longestMs / 1000),
+      static_cast<unsigned long>(acknowledgedPublishes),
+      static_cast<unsigned long>(acknowledgementTimeouts),
+      static_cast<unsigned long>(enqueueFailures),
+      static_cast<unsigned long>(rejectedGroups),
+      static_cast<unsigned>(pending.size()), static_cast<unsigned>(pendingLogs.size()),
+      static_cast<unsigned>(queueHighWater),
+      static_cast<unsigned long>(droppedLogs),
+      static_cast<unsigned long>(coalesced),
+      outstandingMessageId,
+      static_cast<unsigned long>(outstandingMessageId ? (now - outstandingAt) / 1000 : 0),
+      mqtt.errorDetails ? "yes" : "no", mqtt.errorType, mqtt.espError,
+      mqtt.tlsError, static_cast<unsigned>(mqtt.certFlags), mqtt.socketError,
+      mqtt.refusalCode,
+      static_cast<unsigned long>(mqtt.errors ? (now - mqtt.errorAt) / 1000 : 0),
+      static_cast<unsigned long>(weatherkit_current::discardedMessages()), ages,
+      wifiConnected ? "up" : "down", static_cast<long>(WiFi.RSSI()),
+      static_cast<unsigned long>(ESP.getFreeHeap()),
+      static_cast<unsigned long>(ESP.getMinFreeHeap()));
+  if (written < 0 || static_cast<size_t>(written) >= sizeof(summary)) {
+    Serial.println("AIO ERROR: diagnostic summary exceeds 1024 bytes; not queued");
+    return false;
+  }
+  // Only replace snapshots not yet handed to MQTT; never mutate an in-flight value.
+  if (replaceable != pending.end()) {
+    pending.erase(replaceable);
+  }
+  diagnosticCoalesced = coalesced;
+  pendingDiagnostic = summary;
+  Serial.printf("AIO: aggregator.diag captured (%s, %u bytes)\n",
+                reason, static_cast<unsigned>(written));
+  return true;
+}
+
+void updateDiagnostics(bool wifiConnected) {
+  const MqttDiagnostics mqtt = diagnosticSnapshot();
+  const uint32_t now = millis();
+  if (mqtt.connects != diagnosticRecoveryCount) {
+    if (mqtt.connects > 1) {
+      recoveryDiagnosticPending = true;
+    }
+    diagnosticRecoveryCount = mqtt.connects;
+  }
+  const char* reason = nullptr;
+  if (startupDiagnosticPending && mqtt.connected) {
+    reason = "startup";
+  } else if (now - diagnosticLastAt >= kDiagnosticIntervalMs) {
+    reason = "periodic";
+  } else if (recoveryDiagnosticPending && mqtt.connected &&
+             now - diagnosticLastAt >= kRecoveryDiagnosticCooldownMs) {
+    reason = "recovery";
+  }
+  if (reason && captureDiagnostic(reason, wifiConnected, now, mqtt)) {
+    if (mqtt.connected) {
+      startupDiagnosticPending = false;
+    }
+    recoveryDiagnosticPending = false;
+    diagnosticLastAt = now;
+  }
+  if (pendingDiagnostic.empty() ||
+      pending.size() + pendingLogs.size() >= kMaxQueuedPublishes) {
+    return;
+  }
+  for (const Publish& publication : pending) {
+    if (publication.isDiagnostic) {
+      return;
+    }
+  }
+  char topic[160];
+  snprintf(topic, sizeof(topic), "%s/feeds/%s", AIO_USERNAME, kDiagnosticFeed);
+  pending.push_back({topic, std::move(pendingDiagnostic), "", false, false, false, 0, true});
+  pendingDiagnostic.clear();
+  trackQueueHighWater();
 }
 
 }
@@ -340,6 +576,7 @@ void begin() {
     return;
   }
   configured = true;
+  diagnosticLastAt = millis();
   snprintf(errorsTopic, sizeof(errorsTopic), "%s/errors", AIO_USERNAME);
   snprintf(throttleTopic, sizeof(throttleTopic), "%s/throttle", AIO_USERNAME);
   if (AIO_WEATHER_LOCATION_ID[0]) {
@@ -347,7 +584,7 @@ void begin() {
       subscription.topic = std::string(AIO_USERNAME) + "/integration/weather/" +
                            AIO_WEATHER_LOCATION_ID + "/" + subscription.type;
     }
-    Serial.println("WeatherKit: current, m5, m30, hour1 enabled; first data waits for next MQTT push");
+    Serial.println("WeatherKit: current, m5, m30, hour1, hour2 enabled; first data waits for next MQTT push");
   } else {
     Serial.println("WeatherKit: disabled; configure AIO_WEATHER_LOCATION_ID");
   }
@@ -387,6 +624,25 @@ void update(bool wifiConnected, bool timeSynchronized, uint32_t now) {
   }
 
   const int error = mqttError.exchange(0);
+  const MqttDiagnostics mqtt = diagnosticSnapshot();
+  if (mqtt.errors != reportedErrors) {
+    reportedErrors = mqtt.errors;
+    char message[224];
+    if (!mqtt.errorDetails) {
+      snprintf(message, sizeof(message), "MQTT error: no details");
+    } else if (mqtt.errorType == MQTT_ERROR_TYPE_TCP_TRANSPORT) {
+      snprintf(message, sizeof(message),
+               "MQTT transport error: esp=%d (%s) tls=%d cert=0x%x errno=%d",
+               mqtt.espError, esp_err_to_name(mqtt.espError), mqtt.tlsError,
+               static_cast<unsigned>(mqtt.certFlags), mqtt.socketError);
+    } else if (mqtt.errorType == MQTT_ERROR_TYPE_CONNECTION_REFUSED) {
+      snprintf(message, sizeof(message), "MQTT connection refused: code=%d",
+               mqtt.refusalCode);
+    } else {
+      snprintf(message, sizeof(message), "MQTT error type %d", mqtt.errorType);
+    }
+    queueMqttLog(message);
+  }
   for (WeatherSubscription& subscription : weatherSubscriptions) {
     if (subscription.failed.exchange(false)) {
       Serial.printf("WeatherKit %s ERROR: MQTT subscription enqueue failed; "
@@ -425,6 +681,7 @@ void update(bool wifiConnected, bool timeSynchronized, uint32_t now) {
 
   const int ackId = acknowledgedMessageId.exchange(0);
   if (ackId != 0 && ackId == outstandingMessageId) {
+    ++acknowledgedPublishes;
     completePublish();
     haveAcknowledgement = true;
     publishProblem = false;
@@ -434,19 +691,29 @@ void update(bool wifiConnected, bool timeSynchronized, uint32_t now) {
   if (outstandingMessageId != 0 &&
       now - outstandingAt >= kPublishTimeoutMs) {
     publishTimedOut = true;
-    Serial.println("AIO ERROR: publish acknowledgement timed out; resetting MQTT");
+    ++acknowledgementTimeouts;
+    Serial.printf("AIO ERROR: publish acknowledgement timed out; resetting MQTT "
+                  "(id=%d age_ms=%lu topic=%s)\n", outstandingMessageId,
+                  static_cast<unsigned long>(now - outstandingAt),
+                  pending.empty() ? "-" : pending.front().topic.c_str());
     if (!pending.empty() && !pending.front().isLog &&
         !pending.front().failureLogged) {
-      queueLog("Publish acknowledgement timed out; retrying");
+      char message[224];
+      snprintf(message, sizeof(message),
+               "Publish acknowledgement timed out; retrying id=%d topic=%s",
+               outstandingMessageId, pending.front().topic.c_str());
+      queueLog(message);
       pending.front().failureLogged = true;
     }
     if (!resetClient()) {
       outstandingAt = static_cast<uint32_t>(now);
     }
+    updateDiagnostics(wifiConnected);
     return;
   }
 
   promoteLog();
+  updateDiagnostics(wifiConnected);
   if (!wifiConnected || !connected || pending.empty() ||
       outstandingMessageId != 0 ||
       now - lastPublishAt < kPublishIntervalMs) {
@@ -458,6 +725,7 @@ void update(bool wifiConnected, bool timeSynchronized, uint32_t now) {
       client, next.topic.c_str(), next.value.c_str(),
       static_cast<int>(next.value.size()), 1, 0, true);
   if (messageId < 0) {
+    ++enqueueFailures;
     publishProblem = true;
     if (!next.failureLogged) {
       Serial.printf("AIO ERROR: unable to queue publish to %s; will retry\n",
@@ -549,7 +817,7 @@ bool enqueueGroup(const char* groupName, const FeedSample* samples,
     if (effectiveValue && *effectiveValue == samples[i].value) {
       continue;
     }
-    changed.push_back({topic, samples[i].value, groupName, false, false, false, 0});
+    changed.push_back({topic, samples[i].value, groupName, false, false, false, 0, false});
     if (previous == publishedValues.end()) {
       newFeeds.emplace(topic, PublishedValue{});
     }
@@ -560,10 +828,12 @@ bool enqueueGroup(const char* groupName, const FeedSample* samples,
   }
   if (pending.size() + pendingLogs.size() + changed.size() + 1 >
       kMaxQueuedPublishes) {
+    ++rejectedGroups;
     Serial.println("AIO ERROR: publish queue is full; feed group rejected");
     return false;
   }
   if (publishedValues.size() + newFeeds.size() > kMaxTrackedFeeds) {
+    ++rejectedGroups;
     Serial.println("AIO ERROR: change cache is full; feed group rejected");
     return false;
   }
@@ -571,6 +841,7 @@ bool enqueueGroup(const char* groupName, const FeedSample* samples,
   changed.back().groupUpdateCount = changed.size();
   publishedValues.insert(newFeeds.begin(), newFeeds.end());
   pending.insert(pending.end(), changed.begin(), changed.end());
+  trackQueueHighWater();
   return true;
 }
 

@@ -74,6 +74,30 @@ constexpr Mapping weatherkitHour1[] = {
     {true, "windSpeed", "hours1windspeed", Conversion::Mph},
 };
 
+constexpr Mapping weatherkitHour2[] = {
+    {true, "forecastStart", "hours2start", Conversion::Text},
+    {true, "cloudCover", "hours2cloudcover", Conversion::Percent},
+    {true, "conditionCode", "hours2conditioncode", Conversion::Text},
+    {true, "daylight", "hours2daylight", Conversion::ForecastDaylight},
+    {true, "humidity", "hours2humidity", Conversion::Percent},
+    {true, "precipitationAmount", "hours2precipitationamount", Conversion::Raw},
+    {true, "precipitationChance", "hours2precipitationchance", Conversion::Percent},
+    {true, "precipitationType", "hours2precipitationtype", Conversion::Text},
+    {true, "precipitationIntensity", "hours2precipitationintensity", Conversion::Raw},
+    {true, "pressure", "hours2pressure", Conversion::Raw},
+    {true, "pressureTrend", "hours2pressuretrend", Conversion::Text},
+    {true, "snowfallIntensity", "hours2snowfallintensity", Conversion::Raw},
+    {true, "snowfallAmount", "hours2snowfallamount", Conversion::Raw},
+    {true, "temperature", "hours2temperature", Conversion::Temperature},
+    {true, "temperatureApparent", "hours2temperatureapparent", Conversion::Temperature},
+    {true, "temperatureDewPoint", "hours2temperaturedewpoint", Conversion::Temperature},
+    {true, "uvIndex", "hours2uvindex", Conversion::Raw},
+    {true, "visibility", "hours2visibility", Conversion::Miles},
+    {true, "windDirection", "hours2winddirection", Conversion::Compass},
+    {true, "windGust", "hours2windgust", Conversion::Mph},
+    {true, "windSpeed", "hours2windspeed", Conversion::Mph},
+};
+
 }
 
 #endif
