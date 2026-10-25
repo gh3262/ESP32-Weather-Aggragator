@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <map>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -19,7 +20,7 @@
 namespace weatherkit_current {
 namespace {
 constexpr size_t kMaxPayloadBytes = 4096;
-constexpr size_t kMaxPendingSnapshots = 5;
+constexpr size_t kMaxPendingSnapshots = 8;
 constexpr uint32_t kRetryMs = 2000;
 
 struct Sample {
@@ -34,7 +35,6 @@ struct Snapshot {
   Group group;
   std::string payload;
   uint32_t receivedAt = 0;
-  bool parsed = false;
   std::vector<Sample> samples;
 
   Snapshot(Group group, std::string payload, uint32_t receivedAt = 0)
@@ -47,6 +47,7 @@ struct Source {
   size_t count;
   bool received = false;
   uint32_t lastReceivedAt = 0;
+  std::map<std::string, std::string> acceptedValues;
 
   Source(Group group, const Mapping* mappings, size_t count)
       : group(group), mappings(mappings), count(count) {}
@@ -63,6 +64,12 @@ Source sources[] = {
      sizeof(feed_config::weatherkitHour1) / sizeof(Mapping)},
     {Group::Hour2, feed_config::weatherkitHour2,
      sizeof(feed_config::weatherkitHour2) / sizeof(Mapping)},
+    {Group::Hour6, feed_config::weatherkitHour6,
+     sizeof(feed_config::weatherkitHour6) / sizeof(Mapping)},
+    {Group::Hour12, feed_config::weatherkitHour12,
+     sizeof(feed_config::weatherkitHour12) / sizeof(Mapping)},
+    {Group::Hour24, feed_config::weatherkitHour24,
+     sizeof(feed_config::weatherkitHour24) / sizeof(Mapping)},
 };
 bool healthStarted = false;
 bool everConnected = false;
@@ -76,12 +83,16 @@ const char* groupName(Group group) {
     case Group::Minutes30: return "WeatherKit m30";
     case Group::Hour1: return "WeatherKit hour1";
     case Group::Hour2: return "WeatherKit hour2";
+    case Group::Hour6: return "WeatherKit hour6";
+    case Group::Hour12: return "WeatherKit hour12";
+    case Group::Hour24: return "WeatherKit hour24";
     default: return "WeatherKit unknown";
   }
 }
 
 std::mutex receiveLock;
 std::deque<Snapshot> incoming;
+std::deque<Snapshot> changes;
 std::string assembly;
 Group assemblyGroup = Group::None;
 Group waitingGroup = Group::None;
@@ -89,6 +100,10 @@ size_t expectedTotal = 0;
 bool assembling = false;
 uint32_t receiveFailures = 0;
 uint32_t discardedTotal = 0;
+uint32_t rawOverflow = 0;
+uint32_t assemblyFailures = 0;
+uint32_t invalidPayloads = 0;
+uint32_t changeOverflow = 0;
 uint32_t lastRetryAt = 0;
 bool retryPending = false;
 std::vector<Sample> waitingSamples;
@@ -239,6 +254,7 @@ void receive(Group group, const char* data, size_t length,
   if (offset == 0) {
     if (assembling) {
       ++receiveFailures;
+      ++assemblyFailures;
     }
     assembling = false;
     assembly.clear();
@@ -251,10 +267,12 @@ void receive(Group group, const char* data, size_t length,
     }
     if (!knownGroup) {
       ++receiveFailures;
+      ++assemblyFailures;
       return;
     }
     if (total == 0 || total > kMaxPayloadBytes) {
       ++receiveFailures;
+      ++assemblyFailures;
       return;
     }
     expectedTotal = total;
@@ -269,12 +287,14 @@ void receive(Group group, const char* data, size_t length,
     assembling = false;
     assembly.clear();
     ++receiveFailures;
+    ++assemblyFailures;
     return;
   }
   assembly.append(data, length);
   if (assembly.size() == expectedTotal) {
     if (incoming.size() >= kMaxPendingSnapshots) {
       ++receiveFailures;
+      ++rawOverflow;
     } else {
       incoming.push_back({assemblyGroup, std::move(assembly), millis()});
     }
@@ -287,51 +307,81 @@ void disconnected() {
   std::lock_guard<std::mutex> guard(receiveLock);
   if (assembling) {
     ++receiveFailures;
+    ++assemblyFailures;
   }
   assembling = false;
   assembly.clear();
 }
 
 void update(uint32_t now) {
-  Snapshot snapshot{Group::None, ""};
+  std::deque<Snapshot> received;
   uint32_t failures;
+  uint32_t rawDrops;
+  uint32_t chunkDrops;
   {
     std::lock_guard<std::mutex> guard(receiveLock);
     failures = receiveFailures;
     receiveFailures = 0;
     discardedTotal += failures;
-    // Validate reception independently of a blocked output queue.
-    for (Snapshot& queued : incoming) {
-      if (queued.parsed) {
-        continue;
-      }
-      queued.parsed = true;
-      for (Source& source : sources) {
-        if (source.group == queued.group) {
-          const bool valid = parse(queued.payload, queued.samples, source.mappings,
-                                   source.count, queued.group);
-          if (valid && !queued.samples.empty()) {
-            source.received = true;
-            source.lastReceivedAt = queued.receivedAt;
-          } else if (!valid) {
-            ++discardedTotal;
-          }
-          break;
-        }
-      }
-      queued.payload.clear();
-    }
-    if (waitingSamples.empty() && !incoming.empty()) {
-      snapshot = std::move(incoming.front());
-      incoming.pop_front();
-    }
+    rawDrops = rawOverflow;
+    chunkDrops = assemblyFailures;
+    received.swap(incoming);
   }
   if (failures) {
     Serial.printf("WeatherKit ERROR: %lu messages discarded "
-                  "(oversize, invalid/incomplete chunks, or receive queue full)\n",
-                  static_cast<unsigned long>(failures));
+                  "(cumulative assembly=%lu raw_queue=%lu)\n",
+                  static_cast<unsigned long>(failures),
+                  static_cast<unsigned long>(chunkDrops),
+                  static_cast<unsigned long>(rawDrops));
   }
-  if (snapshot.parsed) {
+  for (Snapshot& snapshot : received) {
+    for (Source& source : sources) {
+      if (source.group != snapshot.group) {
+        continue;
+      }
+      if (!parse(snapshot.payload, snapshot.samples, source.mappings,
+                 source.count, snapshot.group)) {
+        ++invalidPayloads;
+        ++discardedTotal;
+        break;
+      }
+      if (!snapshot.samples.empty()) {
+        source.received = true;
+        source.lastReceivedAt = snapshot.receivedAt;
+      }
+      std::vector<Sample> changed;
+      for (Sample& sample : snapshot.samples) {
+        const auto previous = source.acceptedValues.find(sample.key);
+        if (previous == source.acceptedValues.end() || previous->second != sample.value) {
+          changed.push_back(std::move(sample));
+        }
+      }
+      if (changed.empty()) {
+        Serial.printf("%s unchanged; no receive backlog entry\n", groupName(source.group));
+        break;
+      }
+      if (changes.size() >= kMaxPendingSnapshots) {
+        ++changeOverflow;
+        ++discardedTotal;
+        Serial.printf("%s ERROR: changed-snapshot backlog full; discarded new "
+                      "snapshot (cumulative change_queue=%lu)\n",
+                      groupName(source.group), static_cast<unsigned long>(changeOverflow));
+        break;
+      }
+      // Commit only admitted values, so a rejected transition can be retried
+      // by a later source push. Pending A/B/A transitions remain distinct.
+      for (const Sample& sample : changed) {
+        source.acceptedValues[sample.key] = sample.value;
+      }
+      snapshot.payload.clear();
+      snapshot.samples = std::move(changed);
+      changes.push_back(std::move(snapshot));
+      break;
+    }
+  }
+  if (waitingSamples.empty() && !changes.empty()) {
+    Snapshot snapshot = std::move(changes.front());
+    changes.pop_front();
     waitingGroup = snapshot.group;
     waitingSamples = std::move(snapshot.samples);
   }
@@ -406,5 +456,10 @@ SourceStatus sourceStatus(Group group, uint32_t now) {
 uint32_t discardedMessages() {
   std::lock_guard<std::mutex> guard(receiveLock);
   return discardedTotal + receiveFailures;
+}
+
+DiscardStatus discardStatus() {
+  std::lock_guard<std::mutex> guard(receiveLock);
+  return {assemblyFailures, rawOverflow, invalidPayloads, changeOverflow};
 }
 }

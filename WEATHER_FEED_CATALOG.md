@@ -65,10 +65,11 @@ these 11 source types at
 - `forecast_days_1`, `forecast_days_2`, `forecast_days_5`
 
 The provider's documentation topic list omits `forecast_hours_12`, but the API
-explicitly supplies its MQTT path. Live hour-12 delivery remains untested.
-The diagnostic currently subscribes to the other ten topics; the main firmware
-subscribes only to current, m5, m30, and hour1. This availability correction does
-not enable additional subscriptions or change destination mappings.
+explicitly supplies its MQTT path. Live hour-12 delivery was confirmed on
+hardware on 2026-10-24.
+The diagnostic currently subscribes to the other ten topics. The main firmware
+now subscribes to current, m5, m30, and hours 1, 2, 6, 12, and 24. Hour-24
+main-firmware publishing awaits board validation; daily topics remain disabled.
 
 The legacy hour-12 outputs are already inventoried under `f4.py` below and in
 the companion CSV; no additional destination rows are needed.

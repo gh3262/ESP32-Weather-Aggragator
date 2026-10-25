@@ -113,6 +113,9 @@ WeatherSubscription weatherSubscriptions[] = {
     {"forecast_minutes_30", weatherkit_current::Group::Minutes30},
     {"forecast_hours_1", weatherkit_current::Group::Hour1},
     {"forecast_hours_2", weatherkit_current::Group::Hour2},
+    {"forecast_hours_6", weatherkit_current::Group::Hour6},
+    {"forecast_hours_12", weatherkit_current::Group::Hour12},
+    {"forecast_hours_24", weatherkit_current::Group::Hour24},
 };
 bool configured = false;
 bool clockSynchronized = false;
@@ -437,7 +440,7 @@ MqttDiagnostics diagnosticSnapshot() {
 
 bool captureDiagnostic(const char* reason, bool wifiConnected, uint32_t now,
                        const MqttDiagnostics& mqtt) {
-  char ages[192] = {};
+  char ages[288] = {};
   size_t used = 0;
   for (const WeatherSubscription& subscription : weatherSubscriptions) {
     const auto source = weatherkit_current::sourceStatus(subscription.group, now);
@@ -471,6 +474,7 @@ bool captureDiagnostic(const char* reason, bool wifiConnected, uint32_t now,
   const uint32_t outageMs = mqtt.outageActive ? now - mqtt.outageAt : 0;
   const uint32_t longestMs =
       outageMs > mqtt.longestOutageMs ? outageMs : mqtt.longestOutageMs;
+  const auto drops = weatherkit_current::discardStatus();
   const int written = snprintf(
       summary, sizeof(summary),
       "%s %s up_s=%lld reset=%d\n"
@@ -479,7 +483,7 @@ bool captureDiagnostic(const char* reason, bool wifiConnected, uint32_t now,
       "queue=%u log_wait=%u high=%u log_drop=%lu diag_coalesced=%lu\n"
       "inflight_id=%d age_s=%lu\n"
       "last_error details=%s type=%d esp=%d tls=%d cert=0x%x errno=%d refusal=%d age_s=%lu\n"
-      "wk_drop=%lu age_s %s\n"
+      "wk_drop=%lu assembly/raw/invalid/change=%lu/%lu/%lu/%lu age_s %s\n"
       "wifi=%s rssi=%ld heap=%lu min=%lu",
       stamp, reason, static_cast<long long>(esp_timer_get_time() / 1000000),
       static_cast<int>(esp_reset_reason()),
@@ -504,7 +508,11 @@ bool captureDiagnostic(const char* reason, bool wifiConnected, uint32_t now,
       mqtt.tlsError, static_cast<unsigned>(mqtt.certFlags), mqtt.socketError,
       mqtt.refusalCode,
       static_cast<unsigned long>(mqtt.errors ? (now - mqtt.errorAt) / 1000 : 0),
-      static_cast<unsigned long>(weatherkit_current::discardedMessages()), ages,
+      static_cast<unsigned long>(weatherkit_current::discardedMessages()),
+      static_cast<unsigned long>(drops.assembly),
+      static_cast<unsigned long>(drops.rawQueue),
+      static_cast<unsigned long>(drops.invalid),
+      static_cast<unsigned long>(drops.changeQueue), ages,
       wifiConnected ? "up" : "down", static_cast<long>(WiFi.RSSI()),
       static_cast<unsigned long>(ESP.getFreeHeap()),
       static_cast<unsigned long>(ESP.getMinFreeHeap()));
@@ -584,7 +592,7 @@ void begin() {
       subscription.topic = std::string(AIO_USERNAME) + "/integration/weather/" +
                            AIO_WEATHER_LOCATION_ID + "/" + subscription.type;
     }
-    Serial.println("WeatherKit: current, m5, m30, hour1, hour2 enabled; first data waits for next MQTT push");
+    Serial.println("WeatherKit: current, m5, m30, hour1, hour2, hour6, hour12, hour24 enabled; first data waits for next MQTT push");
   } else {
     Serial.println("WeatherKit: disabled; configure AIO_WEATHER_LOCATION_ID");
   }

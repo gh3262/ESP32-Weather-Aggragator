@@ -84,10 +84,15 @@ void reset(uint32_t now = 0, bool diagnostics = false) {
     subscription.lastRetryAt = 0;
   }
   weatherkit_current::incoming.clear();
+  weatherkit_current::changes.clear();
   weatherkit_current::assembly.clear();
   weatherkit_current::assembling = false;
   weatherkit_current::receiveFailures = 0;
   weatherkit_current::discardedTotal = 0;
+  weatherkit_current::rawOverflow = 0;
+  weatherkit_current::assemblyFailures = 0;
+  weatherkit_current::invalidPayloads = 0;
+  weatherkit_current::changeOverflow = 0;
   weatherkit_current::waitingSamples.clear();
   weatherkit_current::retryPending = false;
   client = nullptr;
@@ -124,6 +129,7 @@ void reset(uint32_t now = 0, bool diagnostics = false) {
   for (auto& source : weatherkit_current::sources) {
     source.received = false;
     source.lastReceivedAt = 0;
+    source.acceptedValues.clear();
   }
   sent.clear();
   subscribedTopics.clear();
@@ -144,7 +150,7 @@ void acknowledge() {
 }
 
 void drain() {
-  for (size_t i = 0; i < 100 &&
+  for (size_t i = 0; i < 160 &&
        (!aio_publisher::pending.empty() || !aio_publisher::pendingLogs.empty() ||
         !aio_publisher::pendingDiagnostic.empty()); ++i) {
     tick(clockMs + 2000);
@@ -210,7 +216,7 @@ int main() {
   assert(client == nullptr);
 
   reset();
-  assert(subscribedTopics.size() == 7);
+  assert(subscribedTopics.size() == 10);
   assert(subscribedTopics[2] ==
          "test-user/integration/weather/test-location/current");
   assert(subscribedTopics[3] ==
@@ -221,6 +227,12 @@ int main() {
          "test-user/integration/weather/test-location/forecast_hours_1");
   assert(subscribedTopics[6] ==
          "test-user/integration/weather/test-location/forecast_hours_2");
+  assert(subscribedTopics[7] ==
+         "test-user/integration/weather/test-location/forecast_hours_6");
+  assert(subscribedTopics[8] ==
+         "test-user/integration/weather/test-location/forecast_hours_12");
+  assert(subscribedTopics[9] ==
+         "test-user/integration/weather/test-location/forecast_hours_24");
   assert(enqueueGroup("current", samples, 2));
   tick(1999);
   assert(sent.empty());
@@ -279,7 +291,7 @@ int main() {
   tick(2001);
   event(MQTT_EVENT_CONNECTED);
   tick(4000);
-  assert(subscribedTopics.size() == 14);
+  assert(subscribedTopics.size() == 20);
   assert(sent.size() == 1 && outstandingMessageId == originalId);
   event(MQTT_EVENT_PUBLISHED, originalId);
   tick(4001);
@@ -353,7 +365,7 @@ int main() {
   rejectSubscription = true;
   subscriptionCalls = 0;
   event(MQTT_EVENT_CONNECTED);
-  assert(subscriptionCalls == 7);
+  assert(subscriptionCalls == 10);
   tick(1);
   assert(Serial.output.find("subscription failed") != std::string::npos);
   for (const auto& subscription : weatherSubscriptions) {
@@ -668,6 +680,163 @@ int main() {
          "20261024110442 Sent feed group WeatherKit hour2 - Number Updated: 1");
 
   reset();
+  pending.clear();
+  pendingLogs.clear();
+  const std::string hour6Json = R"({"forecastStart":"2026-10-25T05:00:00Z",
+    "daylight":false,"visibility":10000,"temperature":20})";
+  minuteEvent(5, hour6Json);
+  tick(1);
+  assert(pending.size() == 4);
+  drain();
+  assert(sent[0].topic == "test-user/feeds/hours6start");
+  assert(sent[1].value == "It will be dark");
+  assert(sent[2].value == "68.0" && sent[3].value == "6");
+  assert(sent[4].value ==
+         "20261024110442 Sent feed group WeatherKit hour6 - Number Updated: 4");
+  minuteEvent(5, hour6Json);
+  tick(clockMs + 1);
+  assert(pending.empty() && sent.size() == 5);
+  minuteEvent(5, R"({"temperature":21})");
+  tick(clockMs + 1);
+  drain();
+  assert(sent[5].topic == "test-user/feeds/hours6temperature");
+  assert(sent[5].value == "69.8");
+  assert(sent[6].value ==
+         "20261024110442 Sent feed group WeatherKit hour6 - Number Updated: 1");
+
+  reset();
+  pending.clear();
+  pendingLogs.clear();
+  const std::string hour12Json = R"({"forecastStart":"2026-10-25T11:00:00Z",
+    "daylight":false,"visibility":10000,"temperature":20})";
+  minuteEvent(6, hour12Json);
+  tick(1);
+  assert(pending.size() == 4);
+  drain();
+  assert(sent[0].topic == "test-user/feeds/hours12start");
+  assert(sent[1].value == "It will be dark");
+  assert(sent[2].value == "68.0" && sent[3].value == "6");
+  assert(sent[4].value ==
+         "20261024110442 Sent feed group WeatherKit hour12 - Number Updated: 4");
+  minuteEvent(6, hour12Json);
+  tick(clockMs + 1);
+  assert(pending.empty() && sent.size() == 5);
+  minuteEvent(6, R"({"temperature":21})");
+  tick(clockMs + 1);
+  drain();
+  assert(sent[5].topic == "test-user/feeds/hours12temperature");
+  assert(sent[5].value == "69.8");
+  assert(sent[6].value ==
+         "20261024110442 Sent feed group WeatherKit hour12 - Number Updated: 1");
+
+  reset();
+  pending.clear();
+  pendingLogs.clear();
+  const std::string hour24Json = R"({"forecastStart":"2026-10-26T02:00:00Z",
+    "daylight":false,"visibility":10000,"temperature":20})";
+  minuteEvent(7, hour24Json);
+  tick(1);
+  assert(pending.size() == 4);
+  drain();
+  assert(sent[0].topic == "test-user/feeds/hours24start");
+  assert(sent[1].value == "It will be dark");
+  assert(sent[2].value == "68.0" && sent[3].value == "6");
+  assert(sent[4].value ==
+         "20261024110442 Sent feed group WeatherKit hour24 - Number Updated: 4");
+  minuteEvent(7, hour24Json);
+  tick(clockMs + 1);
+  assert(pending.empty() && sent.size() == 5);
+  minuteEvent(7, R"({"temperature":21})");
+  tick(clockMs + 1);
+  drain();
+  assert(sent[5].topic == "test-user/feeds/hours24temperature");
+  assert(sent[5].value == "69.8");
+  assert(sent[6].value ==
+         "20261024110442 Sent feed group WeatherKit hour24 - Number Updated: 1");
+
+  reset();
+  pending.clear();
+  pendingLogs.clear();
+  size_t sourceIndex = 0;
+  std::vector<std::string> startupPayloads;
+  for (const auto& source : weatherkit_current::sources) {
+    JsonDocument document;
+    for (size_t i = 0; i < source.count; ++i) {
+      const auto& mapping = source.mappings[i];
+      switch (mapping.conversion) {
+        case feed_config::Conversion::Text:
+          document[mapping.field] = "test";
+          break;
+        case feed_config::Conversion::Boolean:
+        case feed_config::Conversion::ForecastDaylight:
+          document[mapping.field] = true;
+          break;
+        case feed_config::Conversion::Percent:
+          document[mapping.field] = 0.5;
+          break;
+        default:
+          document[mapping.field] = 1;
+          break;
+      }
+    }
+    std::string json;
+    serializeJson(document, json);
+    startupPayloads.push_back(json);
+    minuteEvent(sourceIndex++, json);
+  }
+  for (uint32_t now = 1; now <= 8; ++now) {
+    tick(now);
+  }
+  assert(weatherkit_current::waitingSamples.size() == 21);
+  assert(weatherkit_current::retryPending);
+  assert(rejectedGroups > 0);
+  assert(weatherkit_current::discardedMessages() == 0);
+  uint32_t nextPushAt = 60000;
+  for (size_t cycle = 0; cycle < 160 &&
+       (!pending.empty() || !pendingLogs.empty() ||
+        !weatherkit_current::waitingSamples.empty() ||
+        !weatherkit_current::changes.empty()); ++cycle) {
+    const uint32_t now = clockMs + 2000;
+    if (now >= nextPushAt) {
+      testMillis = now;
+      for (size_t i = 0; i < startupPayloads.size(); ++i) {
+        minuteEvent(i, startupPayloads[i]);
+      }
+      nextPushAt += 60000;
+    }
+    tick(now);
+    if (outstandingMessageId != 0) {
+      acknowledge();
+      tick(now + 1);
+    }
+  }
+  assert(pending.empty() && pendingLogs.empty());
+  assert(weatherkit_current::discardedMessages() == 0);
+  size_t dataPublishes = 0;
+  size_t completionLogs = 0;
+  std::map<std::string, size_t> feeds;
+  for (const auto& publication : sent) {
+    if (publication.topic == "test-user/feeds/aggregator.log") {
+      if (publication.value.find("Sent feed group WeatherKit") != std::string::npos) {
+        ++completionLogs;
+      }
+    } else {
+      ++dataPublishes;
+      ++feeds[publication.topic];
+    }
+  }
+  assert(dataPublishes == 131 && feeds.size() == 131);
+  assert(completionLogs == 8);
+  for (const auto& feed : feeds) {
+    assert(feed.second == 1);
+  }
+  for (size_t i = 1; i < sent.size(); ++i) {
+    assert(sent[i].at - sent[i - 1].at >= 2000);
+  }
+  assert(weatherkit_current::waitingSamples.empty());
+  assert(!weatherkit_current::retryPending);
+
+  reset();
   assert(health(0) == HealthStatus::Amber);
   tick(2000);
   acknowledge();
@@ -754,6 +923,9 @@ int main() {
   assert(startup.find("mqtt=up c/d/e=1/0/0") != std::string::npos);
   assert(startup.find("forecast_hours_1=-") != std::string::npos);
   assert(startup.find("forecast_hours_2=-") != std::string::npos);
+  assert(startup.find("forecast_hours_6=-") != std::string::npos);
+  assert(startup.find("forecast_hours_12=-") != std::string::npos);
+  assert(startup.find("forecast_hours_24=-") != std::string::npos);
   assert(startup.find("wifi=up rssi=-55 heap=200000 min=180000") != std::string::npos);
   assert(startup.size() <= 1024);
   drain();
@@ -924,6 +1096,10 @@ int main() {
   maximum.lastOutageMs = maximum.longestOutageMs = UINT32_MAX;
   acknowledgedPublishes = acknowledgementTimeouts = enqueueFailures =
       rejectedGroups = droppedLogs = diagnosticCoalesced = UINT32_MAX;
+  weatherkit_current::assemblyFailures = UINT32_MAX;
+  weatherkit_current::rawOverflow = UINT32_MAX;
+  weatherkit_current::invalidPayloads = UINT32_MAX;
+  weatherkit_current::changeOverflow = UINT32_MAX;
   for (auto& source : weatherkit_current::sources) {
     source.received = true;
     source.lastReceivedAt = 0;

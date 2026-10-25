@@ -52,7 +52,7 @@ PlatformIO/Arduino firmware for a Seeed Studio XIAO ESP32-S3 with an Adafruit
   pixel initialization and updates during Wi-Fi diagnostics.
 
 The main firmware receives WeatherKit current conditions, 5-/30-minute
-forecasts, and hour-1/hour-2 forecasts through Adafruit IO MQTT and publishes changed
+forecasts, and hour-1/hour-2/hour-6/hour-12/hour-24 forecasts through Adafruit IO MQTT and publishes changed
 values through the shared paced queue. Other providers, other hourly horizons,
 and daily forecast adapters are not implemented yet.
 [The feed catalog](WEATHER_FEED_CATALOG.csv) remains the migration reference.
@@ -138,9 +138,11 @@ It includes:
   error codes, certificate flags, socket errno, broker refusal code, and age
   in seconds. Only fields relevant to the last error type are populated.
   `c/d/e`'s error count of zero means no MQTT error has been observed.
-- `wk_drop`: cumulative discarded WeatherKit messages (assembly/receive-queue
-  failures and malformed or wholly unusable payloads). A payload with some
-  valid fields still counts as usable, not discarded.
+- `wk_drop`: cumulative discarded WeatherKit messages. The adjacent
+  `assembly/raw/invalid/change` counters distinguish oversize/invalid/incomplete
+  assembly, raw inbox overflow, malformed/wholly unusable payloads, and changed
+  snapshots rejected at backlog capacity. A partially valid payload is usable.
+  Unchanged snapshots filtered before backlog admission are not discards.
 - Per-source `age_s`: time since the last usable payload, including unchanged
   payloads; `-` means no usable data yet, `off` means the source or all of its
   output mappings are disabled.
@@ -246,8 +248,9 @@ text are independent rows and can be enabled or disabled separately.
 All 20 current outputs and all six minute-forecast outputs are enabled by
 default. `weatherkitMinutes5` and `weatherkitMinutes30` configure their outputs
 independently using the same row format. `weatherkitHour1` independently
-configures 21 enabled hour-1 outputs; `weatherkitHour2` configures the
-corresponding 21 `hours2*` outputs.
+configures 21 enabled hour-1 outputs; `weatherkitHour2`, `weatherkitHour6`, and
+`weatherkitHour12` configure 21 outputs each for `hours2*`, `hours6*`, and `hours12*`.
+`weatherkitHour24` configures the corresponding 21 `hours24*` outputs.
 
 Rebuild, run the adapter/publisher tests, and upload after a configuration
 change. The default-mapping assertions in the adapter tests intentionally
@@ -281,15 +284,32 @@ fields such as the altitude-specific cloud covers may be absent. Each push is
 filtered against queued/acknowledged values; an entirely unchanged push creates
 no publish or log-feed entry. A changed group completes with
 `Sent feed group WeatherKit current - Number Updated: n` in `aggregator.log`.
-Only hours 1 and 2 are enabled among hourly topics; daily topics are not subscribed yet.
+Hours 1, 2, 6, 12, and 24 are enabled; daily topics are not subscribed yet.
 
-MQTT-task delivery assembles messages up to 4096 bytes, then hands complete
-snapshots to the main loop for parsing/publication. Across current, m5, m30, hour1, and hour2,
-up to five received
-snapshots wait behind one parsed snapshot; new arrivals beyond that limit are
-discarded with a serial error. Invalid/incomplete chunk sequences and oversize
-messages are likewise reported. If the publisher rejects a group, the parsed
-snapshot remains for retries every two seconds, preserving FIFO order.
+MQTT-task delivery assembles messages up to 4096 bytes into an eight-message
+raw inbox. Every main-loop update drains that inbox, even when publishing is
+blocked. Parsing, validation, and serial reporting run outside the MQTT receive
+mutex. Usable messages refresh per-topic health using their arrival time.
+
+Before backlog admission, normalized values are compared with the last values
+accepted from that source. Unchanged fields need no backlog space; a wholly
+unchanged message refreshes health without adding an entry. This prevents
+repeated identical minute pushes from filling the backlog during an outage.
+Missing/invalid fields do not erase earlier accepted values.
+
+Genuine changed snapshots wait in a separate eight-entry FIFO behind one
+snapshot retained for two-second publish retries. Reversions such as A/B/A and
+cross-group arrival order are preserved; newer snapshots never overwrite
+accepted changes. The existing publisher still performs its final comparison
+against queued/acknowledged values. Both RAM caches reset on reboot.
+
+Storage remains bounded, not lossless for unlimited changing data: raw inbox
+overflow or a full changed-snapshot backlog discards the newest snapshot and
+reports its specific cause. A rejected change does not advance the source's
+accepted-value cache, allowing a later push to retry it. Its usable reception
+still refreshes health, which measures source availability rather than delivery.
+Malformed/incomplete messages remain explicit errors. Separate cumulative drop
+counters are included in `aggregator.diag`.
 The source's `asOf` timestamp is published as a feed value, not used as an AIO
 historical timestamp. Source-age rejection and heartbeat policy are deferred.
 
@@ -330,8 +350,8 @@ After uploading the main environment, wait for the next MQTT push and look for
 `WeatherKit m5: parsed 3 valid feed samples` and the equivalent m30 message.
 Verify the six existing minute feeds and both completion logs. A startup burst
 of all 26 current/minute values needs roughly 52 seconds, plus logs, to drain;
-arrival order determines which group publishes first. With hours 1 and 2 also enabled,
-the startup burst is 68 values, roughly 136 seconds plus logs. This exceeds the
+arrival order determines which group publishes first. With hours 1, 2, 6, 12, and 24 also enabled,
+the startup burst is 131 values, roughly 262 seconds plus logs. This exceeds the
 64-entry publish queue; the adapter retains and retries groups as space opens,
 without increasing the publish rate. Subsequent updates are
 change-driven, not forced every five or thirty minutes. Do not run another
@@ -339,7 +359,8 @@ publisher against these same destination feeds.
 
 ### WeatherKit hour-1 forecast
 
-The main MQTT connection subscribes to `forecast_hours_1` and `forecast_hours_2`.
+The main MQTT connection subscribes to `forecast_hours_1`, `forecast_hours_2`,
+`forecast_hours_6`, `forecast_hours_12`, and `forecast_hours_24`.
 The hour-1 topic's 21 `hours1*` outputs follow the legacy
 [hour-1 handler](circuitpython/Apple_Weatherkit/f1.py), with independently
 enabled mappings in [feed_config.h](include/feed_config.h).
@@ -367,7 +388,7 @@ Unchanged pushes create no publishes or completion logs.
 `weatherkitHour2`, following the legacy [hour-2 handler](circuitpython/Apple_Weatherkit/f2.py).
 Fields, conversions, validation, FIFO retries, and change detection match hour 1.
 Visibility is whole miles, correcting the legacy handler's raw-meter output.
-No hour-6/hour-12/hour-24 or daily subscriptions are enabled.
+Daily subscriptions are not enabled.
 
 After uploading, expect `WeatherKit hour2: parsed 21 valid feed samples` when all
 fields are present, updates to the existing `hours2*` feeds, and
@@ -375,6 +396,54 @@ fields are present, updates to the existing `hours2*` feeds, and
 Subsequent unchanged messages produce no updates; changed messages log only
 their changed count. The WeatherKit pixel now waits for usable hour-2 data too,
 and `aggregator.diag` includes its age as `forecast_hours_2`.
+
+### WeatherKit hour-6 forecast
+
+`forecast_hours_6` uses 21 independently configurable mappings in
+`weatherkitHour6`, following the legacy [hour-6 handler](circuitpython/Apple_Weatherkit/f3.py).
+Conversions, validation, FIFO retries, and change detection match hours 1 and 2,
+including visibility in whole miles rather than the legacy raw meters.
+
+After uploading, expect `WeatherKit hour6: parsed 21 valid feed samples` when all
+fields are present, updates to existing `hours6*` feeds, and
+`Sent feed group WeatherKit hour6 - Number Updated: 21` in `aggregator.log`.
+The WeatherKit pixel includes hour-6 freshness, and `aggregator.diag` reports
+its age as `forecast_hours_6`. Startup queue-full rejections retain the parsed
+group for retry; they do not discard it.
+
+### WeatherKit hour-12 forecast
+
+`forecast_hours_12` uses 21 independently configurable mappings in
+`weatherkitHour12`, following the legacy [hour-12 handler](circuitpython/Apple_Weatherkit/f4.py).
+Conversions and validation match the other hourly horizons, including whole-mile
+visibility, Fahrenheit temperatures, whole-mph wind speeds, and forecast daylight
+wording. Changed values share the same paced FIFO, retry, and completion-log path.
+
+The API advertises this MQTT topic despite its omission from the provider's
+documentation; live delivery was confirmed on hardware on 2026-10-24. After uploading, look
+for `WeatherKit hour12: parsed 21 valid feed samples`, updates to `hours12*`, and
+`Sent feed group WeatherKit hour12 - Number Updated: 21`.
+Hour-12 freshness participates in the WeatherKit pixel and appears in
+`aggregator.diag` as `forecast_hours_12`. If the topic does not supply usable
+data, the pixel remains amber and becomes red after the normal five-minute
+initial-data grace period.
+
+### WeatherKit hour-24 forecast
+
+`forecast_hours_24` uses 21 independently configurable mappings in
+`weatherkitHour24`, following the legacy [hour-24 handler](circuitpython/Apple_Weatherkit/f5.py).
+Conversions and validation match the other hourly horizons, including visibility
+in whole miles, Fahrenheit temperatures, whole-mph wind speeds, and the
+provider-supplied `pressureTrend`. No historical pressure-trend calculation is used.
+
+After uploading, expect `WeatherKit hour24: parsed 21 valid feed samples` when
+all fields are present, updates to existing `hours24*` feeds, and
+`Sent feed group WeatherKit hour24 - Number Updated: 21` in `aggregator.log`.
+Hour-24 freshness participates in the WeatherKit pixel and appears in
+`aggregator.diag` as `forecast_hours_24`. Unchanged pushes refresh freshness
+without consuming change-backlog entries. Allow about five minutes plus source
+arrival time for the complete 131-output startup burst and logs. Publish queue
+capacity rejections retain groups for retry; daily forecasts remain disabled.
 
 ### Planned weather collection and publishing
 
@@ -434,8 +503,9 @@ acts as a request group whose updates arrive when Adafruit IO has new data;
 samples still pass through the same change filter and publishing queue.
 The integration API's `links.mqtt` response supplied on 2026-10-24 explicitly
 advertises `forecast_hours_12`, despite its omission from the provider's
-documentation topic list. Hour-12 message delivery has not yet been tested;
-neither the main firmware nor the diagnostic currently subscribes to it.
+documentation topic list. The main firmware now subscribes to it; live hour-12
+message delivery was confirmed on hardware on 2026-10-24. The isolated diagnostic remains
+unchanged and does not subscribe to hour 12.
 Early measurements with the WeatherKit MQTT diagnostic build below show
 non-retained pushes of its ten subscribed topics about once a minute; longer runs will confirm
 cadence, change frequency, and stability before this is relied on.
@@ -597,7 +667,7 @@ These calls should remain on the main loop task, not interrupt handlers.
 
 AIO and WeatherKit use the same MQTT connection. Pixel 1 reports transport and
 publish acknowledgement health; pixel 2 tracks reception separately for current,
-m5, m30, hour1, and hour2. Unchanged valid payloads refresh reception health. Malformed,
+m5, m30, hour1, hour2, hour6, hour12, and hour24. Unchanged valid payloads refresh reception health. Malformed,
 unusable, incomplete, or discarded messages do not. Reception is validated even
 when the output queue is blocked, using the message's actual arrival time.
 Groups with all mappings disabled are excluded. A disabled service's pixel is off.
@@ -645,8 +715,10 @@ output precision, and text formatting belong in its adapter.
 
 These helpers are used by the WeatherKit current/minute adapter. Feed change detection
 is implemented in the publisher. UTC/freshness handling, provider descriptions,
-averaging, and pressure trends will
-be added with the relevant collection/publishing infrastructure.
+and averaging will be added with the relevant collection/publishing infrastructure.
+Calculating barometric trends from historical pressure readings is out of scope:
+WeatherKit supplies `pressureTrend` for current conditions and hourly forecasts,
+and those provider-supplied values are passed through to the configured feeds.
 
 ### Running transformation tests without hardware
 

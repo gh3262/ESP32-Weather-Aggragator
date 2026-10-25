@@ -98,6 +98,78 @@ constexpr Mapping weatherkitHour2[] = {
     {true, "windSpeed", "hours2windspeed", Conversion::Mph},
 };
 
+constexpr Mapping weatherkitHour6[] = {
+    {true, "forecastStart", "hours6start", Conversion::Text},
+    {true, "cloudCover", "hours6cloudcover", Conversion::Percent},
+    {true, "conditionCode", "hours6conditioncode", Conversion::Text},
+    {true, "daylight", "hours6daylight", Conversion::ForecastDaylight},
+    {true, "humidity", "hours6humidity", Conversion::Percent},
+    {true, "precipitationAmount", "hours6precipitationamount", Conversion::Raw},
+    {true, "precipitationChance", "hours6precipitationchance", Conversion::Percent},
+    {true, "precipitationType", "hours6precipitationtype", Conversion::Text},
+    {true, "precipitationIntensity", "hours6precipitationintensity", Conversion::Raw},
+    {true, "pressure", "hours6pressure", Conversion::Raw},
+    {true, "pressureTrend", "hours6pressuretrend", Conversion::Text},
+    {true, "snowfallIntensity", "hours6snowfallintensity", Conversion::Raw},
+    {true, "snowfallAmount", "hours6snowfallamount", Conversion::Raw},
+    {true, "temperature", "hours6temperature", Conversion::Temperature},
+    {true, "temperatureApparent", "hours6temperatureapparent", Conversion::Temperature},
+    {true, "temperatureDewPoint", "hours6temperaturedewpoint", Conversion::Temperature},
+    {true, "uvIndex", "hours6uvindex", Conversion::Raw},
+    {true, "visibility", "hours6visibility", Conversion::Miles},
+    {true, "windDirection", "hours6winddirection", Conversion::Compass},
+    {true, "windGust", "hours6windgust", Conversion::Mph},
+    {true, "windSpeed", "hours6windspeed", Conversion::Mph},
+};
+
+constexpr Mapping weatherkitHour12[] = {
+    {true, "forecastStart", "hours12start", Conversion::Text},
+    {true, "cloudCover", "hours12cloudcover", Conversion::Percent},
+    {true, "conditionCode", "hours12conditioncode", Conversion::Text},
+    {true, "daylight", "hours12daylight", Conversion::ForecastDaylight},
+    {true, "humidity", "hours12humidity", Conversion::Percent},
+    {true, "precipitationAmount", "hours12precipitationamount", Conversion::Raw},
+    {true, "precipitationChance", "hours12precipitationchance", Conversion::Percent},
+    {true, "precipitationType", "hours12precipitationtype", Conversion::Text},
+    {true, "precipitationIntensity", "hours12precipitationintensity", Conversion::Raw},
+    {true, "pressure", "hours12pressure", Conversion::Raw},
+    {true, "pressureTrend", "hours12pressuretrend", Conversion::Text},
+    {true, "snowfallIntensity", "hours12snowfallintensity", Conversion::Raw},
+    {true, "snowfallAmount", "hours12snowfallamount", Conversion::Raw},
+    {true, "temperature", "hours12temperature", Conversion::Temperature},
+    {true, "temperatureApparent", "hours12temperatureapparent", Conversion::Temperature},
+    {true, "temperatureDewPoint", "hours12temperaturedewpoint", Conversion::Temperature},
+    {true, "uvIndex", "hours12uvindex", Conversion::Raw},
+    {true, "visibility", "hours12visibility", Conversion::Miles},
+    {true, "windDirection", "hours12winddirection", Conversion::Compass},
+    {true, "windGust", "hours12windgust", Conversion::Mph},
+    {true, "windSpeed", "hours12windspeed", Conversion::Mph},
+};
+
+constexpr Mapping weatherkitHour24[] = {
+    {true, "forecastStart", "hours24start", Conversion::Text},
+    {true, "cloudCover", "hours24cloudcover", Conversion::Percent},
+    {true, "conditionCode", "hours24conditioncode", Conversion::Text},
+    {true, "daylight", "hours24daylight", Conversion::ForecastDaylight},
+    {true, "humidity", "hours24humidity", Conversion::Percent},
+    {true, "precipitationAmount", "hours24precipitationamount", Conversion::Raw},
+    {true, "precipitationChance", "hours24precipitationchance", Conversion::Percent},
+    {true, "precipitationType", "hours24precipitationtype", Conversion::Text},
+    {true, "precipitationIntensity", "hours24precipitationintensity", Conversion::Raw},
+    {true, "pressure", "hours24pressure", Conversion::Raw},
+    {true, "pressureTrend", "hours24pressuretrend", Conversion::Text},
+    {true, "snowfallIntensity", "hours24snowfallintensity", Conversion::Raw},
+    {true, "snowfallAmount", "hours24snowfallamount", Conversion::Raw},
+    {true, "temperature", "hours24temperature", Conversion::Temperature},
+    {true, "temperatureApparent", "hours24temperatureapparent", Conversion::Temperature},
+    {true, "temperatureDewPoint", "hours24temperaturedewpoint", Conversion::Temperature},
+    {true, "uvIndex", "hours24uvindex", Conversion::Raw},
+    {true, "visibility", "hours24visibility", Conversion::Miles},
+    {true, "windDirection", "hours24winddirection", Conversion::Compass},
+    {true, "windGust", "hours24windgust", Conversion::Mph},
+    {true, "windSpeed", "hours24windspeed", Conversion::Mph},
+};
+
 }
 
 #endif

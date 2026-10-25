@@ -25,11 +25,13 @@ const char payload[] = R"JSON({
 void reset() {
   using namespace weatherkit_current;
   incoming.clear();
+  changes.clear();
   assembly.clear();
   expectedTotal = 0;
   assembling = false;
   receiveFailures = 0;
   discardedTotal = 0;
+  rawOverflow = assemblyFailures = invalidPayloads = changeOverflow = 0;
   retryPending = false;
   waitingSamples.clear();
   lastRetryAt = 0;
@@ -39,6 +41,7 @@ void reset() {
   for (auto& source : sources) {
     source.received = false;
     source.lastReceivedAt = 0;
+    source.acceptedValues.clear();
   }
   submissions = 0;
   submitted.clear();
@@ -164,7 +167,7 @@ int main() {
   assert(submissions == 1 && waitingSamples.size() == 20);
   deliver(R"({"temperature":21})");
   update(998);
-  assert(submissions == 1 && incoming.size() == 1);
+  assert(submissions == 1 && changes.size() == 1 && incoming.empty());
   acceptGroup = true;
   update(999);
   assert(submissions == 2 && submitted.at("currenttemperature") == "68.0");
@@ -280,7 +283,7 @@ int main() {
   assert(submitted == expectedHourly);
   deliver(R"({"daylight":false,"temperature":-10,"snowfallAmount":0})", Group::Hour1);
   update(1);
-  assert(submitted.size() == 3);
+  assert(submitted.size() == 2);
   assert(submitted.at("hours1daylight") == "It will be dark");
   assert(submitted.at("hours1temperature") == "14.0");
   const size_t hourlySubmissions = submissions;
@@ -307,6 +310,63 @@ int main() {
   deliver(R"({"daylight":1,"precipitationChance":2,"visibility":-1})", Group::Hour2);
   update(2);
   assert(submissions == hour2Submissions);
+
+  reset();
+  expectedGroup = "WeatherKit hour6";
+  receive(Group::Hour6, hourly.data(), 11, 0, hourly.size());
+  receive(Group::None, hourly.data() + 11, hourly.size() - 11, 11, hourly.size());
+  update(0);
+  std::map<std::string, std::string> expectedHour6;
+  for (const auto& sample : expectedHourly) {
+    expectedHour6.emplace("hours6" + sample.first.substr(6), sample.second);
+  }
+  assert(submitted == expectedHour6 && submitted.size() == 21);
+  deliver(R"({"daylight":false,"temperature":-10,"snowfallAmount":0})", Group::Hour6);
+  update(1);
+  assert(submitted.at("hours6daylight") == "It will be dark");
+  assert(submitted.at("hours6temperature") == "14.0");
+  const size_t hour6Submissions = submissions;
+  deliver(R"({"daylight":1,"precipitationChance":2,"visibility":-1})", Group::Hour6);
+  update(2);
+  assert(submissions == hour6Submissions);
+
+  reset();
+  expectedGroup = "WeatherKit hour12";
+  receive(Group::Hour12, hourly.data(), 11, 0, hourly.size());
+  receive(Group::None, hourly.data() + 11, hourly.size() - 11, 11, hourly.size());
+  update(0);
+  std::map<std::string, std::string> expectedHour12;
+  for (const auto& sample : expectedHourly) {
+    expectedHour12.emplace("hours12" + sample.first.substr(6), sample.second);
+  }
+  assert(submitted == expectedHour12 && submitted.size() == 21);
+  deliver(R"({"daylight":false,"temperature":-10,"snowfallAmount":0})", Group::Hour12);
+  update(1);
+  assert(submitted.at("hours12daylight") == "It will be dark");
+  assert(submitted.at("hours12temperature") == "14.0");
+  const size_t hour12Submissions = submissions;
+  deliver(R"({"daylight":1,"precipitationChance":2,"visibility":-1})", Group::Hour12);
+  update(2);
+  assert(submissions == hour12Submissions);
+
+  reset();
+  expectedGroup = "WeatherKit hour24";
+  receive(Group::Hour24, hourly.data(), 11, 0, hourly.size());
+  receive(Group::None, hourly.data() + 11, hourly.size() - 11, 11, hourly.size());
+  update(0);
+  std::map<std::string, std::string> expectedHour24;
+  for (const auto& sample : expectedHourly) {
+    expectedHour24.emplace("hours24" + sample.first.substr(6), sample.second);
+  }
+  assert(submitted == expectedHour24 && submitted.size() == 21);
+  deliver(R"({"daylight":false,"temperature":-10,"snowfallAmount":0})", Group::Hour24);
+  update(1);
+  assert(submitted.at("hours24daylight") == "It will be dark");
+  assert(submitted.at("hours24temperature") == "14.0");
+  const size_t hour24Submissions = submissions;
+  deliver(R"({"daylight":1,"precipitationChance":2,"visibility":-1})", Group::Hour24);
+  update(2);
+  assert(submissions == hour24Submissions);
 
   reset();
   assert(health(false, 0) == HealthStatus::Amber);
@@ -338,19 +398,19 @@ int main() {
   }
   acceptGroup = false;
   expectedGroup = "WeatherKit current";
-  // Refresh the other topics, leaving hour2 stale.
+  // Refresh the other topics, leaving hour24 stale.
   testMillis = 301001;
   for (const auto& source : sources) {
-    if (source.group != Group::Hour2) {
+    if (source.group != Group::Hour24) {
       deliver(validHealth, source.group);
     }
   }
   update(301001);
   assert(health(true, 301001) == HealthStatus::Red);
-  deliver("not json", Group::Hour2);
+  deliver("not json", Group::Hour24);
   update(301002);
   assert(health(true, 301002) == HealthStatus::Red);
-  deliver(validHealth, Group::Hour2);
+  deliver(validHealth, Group::Hour24);
   update(301003);
   assert(health(true, 301003) == HealthStatus::Green);
   // Disabled groups do not hold the indicator amber.
@@ -430,5 +490,107 @@ int main() {
   disconnected();
   assert(discardedMessages() == 4);
 
-  puts("WeatherKit current, minute, and hour1 tests passed.");
+  reset();
+  acceptGroup = false;
+  assert(health(true, 0) == HealthStatus::Amber);
+  // Thirty minutes of unchanged pushes must not fill the change backlog.
+  for (uint32_t cycle = 0; cycle < 30; ++cycle) {
+    testMillis = cycle * 60000;
+    for (const auto& source : sources) {
+      deliver(R"({"precipitationIntensity":0})", source.group);
+    }
+    update(testMillis);
+    assert(incoming.empty());
+    assert(changes.size() == kMaxPendingSnapshots - 1);
+    assert(waitingSamples.size() == 1);
+    assert(discardedMessages() == 0);
+    assert(health(true, testMillis) == HealthStatus::Green);
+  }
+  acceptGroup = true;
+  for (const auto& source : sources) {
+    expectedGroup = groupName(source.group);
+    testMillis += 2000;
+    update(testMillis);
+    assert(submittedGroup == expectedGroup);
+    assert(submitted.size() == 1);
+  }
+  assert(changes.empty() && waitingSamples.empty());
+
+  reset();
+  acceptGroup = false;
+  deliver(R"({"temperature":20,"humidity":0.5})");
+  update(0);
+  testMillis = 1;
+  deliver(R"({"temperature":20.01})"); // Same formatted 68.0 value.
+  update(1);
+  assert(changes.empty());
+  deliver(R"({"temperature":21})");
+  deliver(R"({"precipitationChance":0.5})", Group::Minutes5);
+  deliver(R"({"temperature":20})");
+  update(2);
+  assert(changes.size() == 3);
+  assert(changes[0].group == Group::Current && changes[0].samples[0].value == "69.8");
+  assert(changes[1].group == Group::Minutes5);
+  assert(changes[2].group == Group::Current && changes[2].samples[0].value == "68.0");
+  deliver(R"({"temperature":null})");
+  update(3);
+  assert(changes.size() == 3 && discardedMessages() == 1);
+  acceptGroup = true;
+  update(2000);
+  assert(submitted.at("currenttemperature") == "68.0");
+  assert(submitted.at("currenthumidity") == "50");
+  update(2001);
+  assert(submitted.size() == 1 && submitted.at("currenttemperature") == "69.8");
+  expectedGroup = "WeatherKit m5";
+  update(2002);
+  assert(submitted.at("m5precipitationchance") == "50");
+  expectedGroup = "WeatherKit current";
+  update(2003);
+  assert(submitted.size() == 1 && submitted.at("currenttemperature") == "68.0");
+
+  reset();
+  acceptGroup = false;
+  deliver(R"({"temperature":0})");
+  update(0);
+  for (size_t i = 1; i <= kMaxPendingSnapshots; ++i) {
+    deliver("{\"temperature\":" + std::to_string(i) + "}");
+    update(static_cast<uint32_t>(i));
+  }
+  assert(changes.size() == kMaxPendingSnapshots);
+  testMillis = 100;
+  deliver(R"({"temperature":9})");
+  update(100);
+  assert(discardStatus().changeQueue == 1 && discardedMessages() == 1);
+  assert(sourceStatus(Group::Current, 100).ageSeconds == 0);
+  assert(sources[0].acceptedValues.at("currenttemperature") == "46.4");
+  assert(Serial.output.find("changed-snapshot backlog full") != std::string::npos);
+  // Losing a new transition at capacity must not mark it accepted.
+  acceptGroup = true;
+  update(2000);
+  update(2001);
+  deliver(R"({"temperature":9})");
+  update(2002);
+  assert(sources[0].acceptedValues.at("currenttemperature") == "48.2");
+  for (uint32_t now = 2003; now < 2012; ++now) {
+    update(now);
+  }
+  assert(submitted.at("currenttemperature") == "48.2");
+  assert(changes.empty() && waitingSamples.empty());
+  assert(discardStatus().rawQueue == 0 && discardStatus().assembly == 0);
+  assert(discardStatus().invalid == 0);
+
+  reset();
+  receive(Group::Current, payload, 0, 0, 4097);
+  for (size_t i = 0; i <= kMaxPendingSnapshots; ++i) {
+    deliver(payload);
+  }
+  assert(discardStatus().assembly == 1);
+  assert(discardStatus().rawQueue == 1);
+  update(0);
+  assert(discardedMessages() == 2);
+  assert(discardStatus().changeQueue == 0);
+  assert(changes.empty()); // Identical raw messages occupy one change entry.
+  assert(submissions == 1);
+
+  puts("WeatherKit current, minute, hour1, hour2, hour6, hour12, and hour24 tests passed.");
 }
