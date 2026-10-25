@@ -7,7 +7,7 @@
 
 namespace weatherkit_current {
 
-enum class Group { None, Current, Minutes5, Minutes30, Hour1, Hour2, Hour6, Hour12, Hour24 };
+enum class Group { None, Current, Minutes5, Minutes30, Hour1, Hour2, Hour6, Hour12, Hour24, Day1 };
 
 // MQTT-task entry points; parsing and publication stay on the main loop.
 void receive(Group group, const char* data, size_t length,

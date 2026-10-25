@@ -15,11 +15,17 @@ struct tm* testLocalTime(const time_t*, struct tm*);
 
 #include <cassert>
 #include <vector>
+#include "weatherkit_day_fixture.h"
 
 TestSerial Serial;
 uint32_t testMillis = 0;
 TestEsp ESP;
 TestWiFi WiFi;
+void (*testTask)(void*) = nullptr;
+bool testTaskFailure = false;
+int testHttpStatus = 200;
+std::string testHttpBody = R"({"data_rate_limit":60,"active_data_rate":12})";
+unsigned testHttpCalls = 0;
 
 time_t testTime(time_t*) { return 1792857600; }
 struct tm* testLocalTime(const time_t*, struct tm* local) {
@@ -78,6 +84,22 @@ void reset(uint32_t now = 0, bool diagnostics = false) {
   mqttError = 0;
   brokerReportedError = false;
   brokerReportedThrottle = false;
+  brokerThrottleEvents = 0;
+  brokerThrottleText[0] = '\0';
+  rateResult = RateResult{};
+  rateResultPending = rateWorkerRunning = false;
+  lastRate = RateResult{};
+  rateAttempted = false;
+  rateAttemptAt = 0;
+  rateRefreshRequested = true;
+  rateFailures = throttleEvents = 0;
+  throttlePaused = false;
+  throttleAt = 0;
+  testTask = nullptr;
+  testTaskFailure = false;
+  testHttpStatus = 200;
+  testHttpBody = R"({"data_rate_limit":60,"active_data_rate":12})";
+  testHttpCalls = 0;
   for (auto& subscription : weatherSubscriptions) {
     subscription.failed = false;
     subscription.retry = false;
@@ -150,7 +172,7 @@ void acknowledge() {
 }
 
 void drain() {
-  for (size_t i = 0; i < 160 &&
+  for (size_t i = 0; i < 256 &&
        (!aio_publisher::pending.empty() || !aio_publisher::pendingLogs.empty() ||
         !aio_publisher::pendingDiagnostic.empty()); ++i) {
     tick(clockMs + 2000);
@@ -215,8 +237,134 @@ int main() {
   update(false, true, 2000);
   assert(client == nullptr);
 
+  RateResult parsed;
+  const char* validRate = R"({"data_rate_limit":60,"active_data_rate":0})";
+  assert(parseRate(validRate, strlen(validRate), parsed));
+  assert(parsed.limit == 60 && parsed.active == 0);
+  for (const char* invalidRate : {
+      "bad", "[]", "{}", R"({"data_rate_limit":0,"active_data_rate":1})",
+      R"({"data_rate_limit":60,"active_data_rate":-1})",
+      R"({"data_rate_limit":60,"active_data_rate":1.5})",
+      R"({"data_rate_limit":"60","active_data_rate":1})",
+      R"({"data_rate_limit":60,"active_data_rate":null})",
+      R"({"data_rate_limit":60,"active_data_rate":4294967296})"}) {
+    assert(!parseRate(invalidRate, strlen(invalidRate), parsed));
+  }
+  const std::string oversizedRate(513, ' ');
+  assert(!parseRate(oversizedRate.c_str(), oversizedRate.size(), parsed));
+  RateBody boundedBody;
+  assert(boundedBody.write(static_cast<uint8_t>('{')) == 1);
+  assert(boundedBody.write(reinterpret_cast<const uint8_t*>(oversizedRate.data()),
+                           oversizedRate.size()) == oversizedRate.size());
+  assert(boundedBody.overflow && boundedBody.length == 512);
+  assert(boundedBody.write(static_cast<uint8_t>('}')) == 1);
+  assert(boundedBody.length == 512);
+
   reset();
-  assert(subscribedTopics.size() == 10);
+  assert(testTask && rateWorkerRunning && testHttpCalls == 0);
+  tick(2000);  // The HTTP worker has not run, but MQTT still progresses.
+  assert(sent.size() == 1);
+  acknowledge();
+  tick(2001);
+  testTask(nullptr);
+  tick(2002);
+  assert(lastRate.valid && lastRate.active == 12 && lastRate.limit == 60);
+  assert(testHttpCalls == 1 && !rateWorkerRunning);
+  tick(59999);
+  assert(!rateWorkerRunning);
+  tick(60000);
+  assert(rateWorkerRunning);
+  testHttpBody = R"({"data_rate_limit":60,"active_data_rate":60})";
+  testTask(nullptr);
+  tick(60001);
+  assert(throttlePaused);
+  assert(enqueueGroup("rate-test", samples, 2));
+  tick(62000);
+  assert(sent.size() == 1);
+  assert(captureDiagnostic("periodic", true, 62000, diagnosticSnapshot()));
+  assert(pendingDiagnostic.find("rate=60/60 age_s=2 fail=0 throttle=0 pause_s=58") != std::string::npos);
+  tick(120001);
+  assert(!throttlePaused && sent.size() == 2);
+  acknowledge();
+  tick(120002);
+  assert(publishedValues.at("test-user/feeds/weather.temp").value == "72");
+
+  reset();
+  testHttpStatus = 503;
+  testTask(nullptr);
+  tick(1);
+  assert(rateFailures == 1 && !lastRate.valid && !throttlePaused);
+  assert(Serial.output.find("HTTP=503") != std::string::npos);
+  tick(60000);
+  testHttpStatus = 200;
+  testHttpBody = "{}";
+  testTask(nullptr);
+  tick(60001);
+  assert(rateFailures == 2 && !lastRate.valid);
+  tick(120000);
+  testHttpStatus = 429;
+  testTask(nullptr);
+  tick(120001);
+  assert(rateFailures == 3 && throttlePaused);
+
+  reset();
+  testTask(nullptr);
+  tick(1);
+  tick(60000);
+  testHttpStatus = -1;
+  testTask(nullptr);
+  tick(60001);
+  assert(rateFailures == 1 && lastRate.valid && lastRate.at == 0);
+  assert(captureDiagnostic("periodic", true, 60001, diagnosticSnapshot()));
+  assert(pendingDiagnostic.find("rate=12/60 age_s=60 fail=1") != std::string::npos);
+  tick(120000);
+  testHttpStatus = 200;
+  testHttpBody = oversizedRate;
+  testTask(nullptr);
+  tick(120001);
+  assert(rateFailures == 2 && lastRate.active == 12);
+
+  reset();
+  testTask(nullptr);
+  tick(1);
+  testTaskFailure = true;
+  tick(60000);
+  assert(rateFailures == 1 && !rateWorkerRunning);
+  tick(60001);
+  assert(rateFailures == 1);
+  assert(Serial.output.find("unable to start account rate check task") != std::string::npos);
+
+  reset(UINT32_MAX - 20000);
+  tick(UINT32_MAX - 18000);
+  assert(outstandingMessageId != 0);
+  esp_mqtt_event_t throttle = {};
+  throttle.topic = throttleTopic;
+  throttle.topic_len = static_cast<int>(strlen(throttleTopic));
+  char notice[] = "data rate limit reached, 9 seconds until throttle released";
+  throttle.data = notice;
+  throttle.data_len = throttle.total_data_len = static_cast<int>(strlen(notice));
+  callback(nullptr, nullptr, MQTT_EVENT_DATA, &throttle);
+  callback(nullptr, nullptr, MQTT_EVENT_DATA, &throttle);
+  tick(UINT32_MAX - 17000);
+  assert(throttleEvents == 2 && throttlePaused);
+  assert(Serial.output.find(notice) != std::string::npos);
+  acknowledge();
+  tick(UINT32_MAX - 16999); // ACKs still drain during cooldown.
+  assert(outstandingMessageId == 0);
+  assert(health(UINT32_MAX - 16999) == HealthStatus::Amber);
+  assert(enqueueGroup("throttle-test", samples, 2));
+  tick(42998);
+  assert(throttlePaused && sent.size() == 1);
+  callback(nullptr, nullptr, MQTT_EVENT_DATA, &throttle);
+  tick(42999); // New notices extend cooldown, including across millis wrap.
+  tick(103000);
+  assert(!throttlePaused && sent.size() == 2 && throttleEvents == 3);
+  assert(sent.back().topic == "test-user/feeds/weather.temp");
+  assert(Serial.output.find("AIO TX: id=") != std::string::npos);
+  assert(Serial.output.find("AIO ACK: id=") != std::string::npos);
+
+  reset();
+  assert(subscribedTopics.size() == 11);
   assert(subscribedTopics[2] ==
          "test-user/integration/weather/test-location/current");
   assert(subscribedTopics[3] ==
@@ -233,6 +381,8 @@ int main() {
          "test-user/integration/weather/test-location/forecast_hours_12");
   assert(subscribedTopics[9] ==
          "test-user/integration/weather/test-location/forecast_hours_24");
+  assert(subscribedTopics[10] ==
+         "test-user/integration/weather/test-location/forecast_days_1");
   assert(enqueueGroup("current", samples, 2));
   tick(1999);
   assert(sent.empty());
@@ -291,7 +441,7 @@ int main() {
   tick(2001);
   event(MQTT_EVENT_CONNECTED);
   tick(4000);
-  assert(subscribedTopics.size() == 20);
+  assert(subscribedTopics.size() == 22);
   assert(sent.size() == 1 && outstandingMessageId == originalId);
   event(MQTT_EVENT_PUBLISHED, originalId);
   tick(4001);
@@ -365,7 +515,7 @@ int main() {
   rejectSubscription = true;
   subscriptionCalls = 0;
   event(MQTT_EVENT_CONNECTED);
-  assert(subscriptionCalls == 10);
+  assert(subscriptionCalls == 11);
   tick(1);
   assert(Serial.output.find("subscription failed") != std::string::npos);
   for (const auto& subscription : weatherSubscriptions) {
@@ -757,25 +907,53 @@ int main() {
   reset();
   pending.clear();
   pendingLogs.clear();
+  minuteEvent(8, kDay1Payload);
+  tick(1);
+  assert(pending.size() == 56);
+  drain();
+  assert(sent.size() == 57);
+  assert(sent[0].topic == "test-user/feeds/days1start");
+  assert(sent[56].value ==
+         "20261024110442 Sent feed group WeatherKit day1 - Number Updated: 56");
+  minuteEvent(8, kDay1Payload);
+  tick(clockMs + 1);
+  assert(pending.empty() && sent.size() == 57);
+  minuteEvent(8, R"({"temperatureMax":21,"overnightForecast":{"temperatureMin":-11}})");
+  tick(clockMs + 1);
+  drain();
+  assert(sent[57].topic == "test-user/feeds/days1temperaturemax");
+  assert(sent[57].value == "69.8");
+  assert(sent[58].topic == "test-user/feeds/days1ovnttemperaturemin");
+  assert(sent[58].value == "12.2");
+  assert(sent[59].value ==
+         "20261024110442 Sent feed group WeatherKit day1 - Number Updated: 2");
+
+  reset();
+  pending.clear();
+  pendingLogs.clear();
   size_t sourceIndex = 0;
   std::vector<std::string> startupPayloads;
   for (const auto& source : weatherkit_current::sources) {
     JsonDocument document;
     for (size_t i = 0; i < source.count; ++i) {
       const auto& mapping = source.mappings[i];
+      const char* separator = strchr(mapping.field, '.');
+      JsonVariant field = separator
+          ? document[std::string(mapping.field, separator - mapping.field)][separator + 1].to<JsonVariant>()
+          : document[mapping.field].to<JsonVariant>();
       switch (mapping.conversion) {
         case feed_config::Conversion::Text:
-          document[mapping.field] = "test";
+          field.set("test");
           break;
         case feed_config::Conversion::Boolean:
         case feed_config::Conversion::ForecastDaylight:
-          document[mapping.field] = true;
+          field.set(true);
           break;
         case feed_config::Conversion::Percent:
-          document[mapping.field] = 0.5;
+          field.set(0.5);
           break;
         default:
-          document[mapping.field] = 1;
+          field.set(1);
           break;
       }
     }
@@ -784,7 +962,7 @@ int main() {
     startupPayloads.push_back(json);
     minuteEvent(sourceIndex++, json);
   }
-  for (uint32_t now = 1; now <= 8; ++now) {
+  for (uint32_t now = 1; now <= 9; ++now) {
     tick(now);
   }
   assert(weatherkit_current::waitingSamples.size() == 21);
@@ -792,7 +970,7 @@ int main() {
   assert(rejectedGroups > 0);
   assert(weatherkit_current::discardedMessages() == 0);
   uint32_t nextPushAt = 60000;
-  for (size_t cycle = 0; cycle < 160 &&
+  for (size_t cycle = 0; cycle < 256 &&
        (!pending.empty() || !pendingLogs.empty() ||
         !weatherkit_current::waitingSamples.empty() ||
         !weatherkit_current::changes.empty()); ++cycle) {
@@ -825,8 +1003,8 @@ int main() {
       ++feeds[publication.topic];
     }
   }
-  assert(dataPublishes == 131 && feeds.size() == 131);
-  assert(completionLogs == 8);
+  assert(dataPublishes == 187 && feeds.size() == 187);
+  assert(completionLogs == 9);
   for (const auto& feed : feeds) {
     assert(feed.second == 1);
   }
@@ -868,9 +1046,23 @@ int main() {
   assert(health(2002) == HealthStatus::Amber);
   assert(enqueueGroup("health-test", samples, 2));
   tick(4000);
+  assert(sent.size() == 1 && outstandingMessageId == 0);
+  tick(62001);
+  assert(sent.size() == 1 && health(62001) == HealthStatus::Amber);
+  tick(62002);
+  assert(sent.size() == 2);
+  acknowledge();
+  tick(62003);
+  assert(health(62003) == HealthStatus::Green);
+  reset();
+  assert(weatherHealth(0) == HealthStatus::Amber);
+  tick(2000);
+  acknowledge();
+  tick(2001);
+  assert(enqueueGroup("health-test", samples, 2));
+  tick(4000);
   acknowledge();
   tick(4001);
-  assert(health(4001) == HealthStatus::Green);
   event(MQTT_EVENT_DISCONNECTED);
   tick(5000);
   assert(health(5000) == HealthStatus::Amber);
@@ -926,6 +1118,7 @@ int main() {
   assert(startup.find("forecast_hours_6=-") != std::string::npos);
   assert(startup.find("forecast_hours_12=-") != std::string::npos);
   assert(startup.find("forecast_hours_24=-") != std::string::npos);
+  assert(startup.find("forecast_days_1=-") != std::string::npos);
   assert(startup.find("wifi=up rssi=-55 heap=200000 min=180000") != std::string::npos);
   assert(startup.size() <= 1024);
   drain();
@@ -1088,6 +1281,11 @@ int main() {
 
   reset();
   MqttDiagnostics maximum;
+  lastRate.valid = true;
+  lastRate.limit = lastRate.active = UINT32_MAX;
+  rateFailures = throttleEvents = UINT32_MAX;
+  throttlePaused = true;
+  throttleAt = UINT32_MAX - 1000;
   maximum.connects = maximum.disconnects = maximum.errors = UINT32_MAX;
   maximum.errorDetails = true;
   maximum.errorType = maximum.espError = maximum.tlsError =

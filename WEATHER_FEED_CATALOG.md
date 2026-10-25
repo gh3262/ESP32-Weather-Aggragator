@@ -68,8 +68,9 @@ The provider's documentation topic list omits `forecast_hours_12`, but the API
 explicitly supplies its MQTT path. Live hour-12 delivery was confirmed on
 hardware on 2026-10-24.
 The diagnostic currently subscribes to the other ten topics. The main firmware
-now subscribes to current, m5, m30, and hours 1, 2, 6, 12, and 24. Hour-24
-main-firmware publishing awaits board validation; daily topics remain disabled.
+now subscribes to current, m5, m30, hours 1, 2, 6, 12, and 24, and day 1.
+Hour-24 main-firmware publishing was confirmed on hardware on 2026-10-24;
+day-1 publishing awaits board validation. Days 2 and 5 remain disabled.
 
 The legacy hour-12 outputs are already inventoried under `f4.py` below and in
 the companion CSV; no additional destination rows are needed.

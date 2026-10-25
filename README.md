@@ -52,9 +52,9 @@ PlatformIO/Arduino firmware for a Seeed Studio XIAO ESP32-S3 with an Adafruit
   pixel initialization and updates during Wi-Fi diagnostics.
 
 The main firmware receives WeatherKit current conditions, 5-/30-minute
-forecasts, and hour-1/hour-2/hour-6/hour-12/hour-24 forecasts through Adafruit IO MQTT and publishes changed
-values through the shared paced queue. Other providers, other hourly horizons,
-and daily forecast adapters are not implemented yet.
+forecasts, hour-1/hour-2/hour-6/hour-12/hour-24 forecasts, and day-1 forecasts
+through Adafruit IO MQTT and publishes changed values through the shared paced
+queue. Other providers and day-2/day-5 forecasts are not implemented yet.
 [The feed catalog](WEATHER_FEED_CATALOG.csv) remains the migration reference.
 
 ### Adafruit IO publishing foundation
@@ -63,9 +63,11 @@ The application starts its TLS-verified MQTT connection after Wi-Fi and NTP are
 ready. Feed samples are submitted in named groups; the queue publishes one
 sample at a time, waits for its QoS 1 acknowledgement, and spaces publish
 attempts by at least two seconds. This caps new application publishes at 30
-per minute, including entries sent to `aggregator.log` and `aggregator.diag`, leaving account
-capacity for other feeds. MQTT's QoS 1 retransmissions can repeat a publish
-after a connection failure; they are not new application queue entries.
+per minute, including entries sent to `aggregator.log` and `aggregator.diag`.
+Other publishers share the account quota, so this is not a guarantee against
+account throttling. MQTT's QoS 1 retransmissions can repeat a publish while
+waiting for an acknowledgement, including on an existing connection; they are
+not new application queue entries and are outside this pacing.
 The queue is bounded and rejects new groups when it
 cannot accept them; callers must report that result rather than silently losing
 updates.
@@ -79,7 +81,56 @@ broker stored a value but its acknowledgement was lost, retrying can create a
 duplicate data point. Group success means every newly queued changed sample
 received a broker acknowledgement, not that the group was atomic or that Adafruit IO performed
 application-level validation. Account error/throttle notices are reported on
-serial.
+serial. Throttle notices also pause new application publishes for 60 seconds
+from the latest notice. All queued weather changes, logs, and diagnostics remain
+queued, and matching ACKs still advance the queue during the pause. This does
+not cancel an in-flight MQTT-owned message or its internal retransmissions.
+After cooldown, normal two-second pacing resumes; further notices extend the
+pause. The AIO pixel stays amber during cooldown unless a red condition applies.
+
+### Account rate monitoring and publish tracing
+
+The firmware reads [`GET /api/v2/{username}/throttle`](https://io.adafruit.com/api/docs/http.html#get-detailed-user-info)
+using the existing account credentials in the `X-AIO-Key` header, verified HTTPS,
+and no feed modifications. It samples once Wi-Fi/time are ready and then once
+per minute. MQTT disconnects and throttle notices request an earlier check,
+with at least 15 seconds between request starts and only one request running.
+A temporary worker task keeps HTTP/TLS work outside the main loop; connection,
+read, and TLS handshake timeouts limit individual blocking operations. Response
+storage is capped at 512 bytes; oversized or malformed responses are failures.
+
+The response's `active_data_rate` and `data_rate_limit` describe the entire
+account, not just the aggregator. A sample at/above the limit, or HTTP 429,
+also starts a 60-second pause. A lower sample never cancels an active cooldown.
+The endpoint does not document a throttle-release countdown, so cooldown is
+conservative rather than inferred from arbitrary notification text. Samples
+cannot reserve capacity against other writers or prevent every throttle event.
+Read requests use the separate HTTP-request allowance, not feed-data writes.
+HTTP/JSON/task-start failures are reported explicitly on serial and counted;
+the last successful sample retains its original timestamp rather than appearing
+fresh or being replaced with a fabricated zero.
+
+USB serial now prints one `AIO TX` line per successful application enqueue:
+message ID, application timestamp in milliseconds, topic, byte count, and a
+32-bit FNV-1a value fingerprint. Matching `AIO ACK` lines include message ID,
+topic, and elapsed milliseconds; unmatched ACK IDs are reported separately.
+Throttle notices include their first 191 payload bytes on serial. None of this
+per-message tracing is forwarded to AIO, avoiding extra feed traffic.
+These lines trace application enqueues, not the MQTT library's internal
+retransmissions; dashboard records without additional TX lines narrow the
+investigation but do not alone distinguish library retries from broker-side
+duplication. No retransmission/reconnect timing settings are changed.
+
+The 1 KB remote diagnostic adds:
+
+```text
+rate=25/60 age_s=12 fail=0 throttle=0 pause_s=0
+```
+
+This is active/limit, age of the last successful HTTP sample, failed rate checks,
+cumulative MQTT throttle-notice count, and remaining application cooldown.
+Before a successful sample, `rate=0/0 age_s=-` explicitly means unknown.
+The existing MQTT `c/d/e` error count does not include broker throttle notices.
 
 After every changed sample queued for a group is acknowledged, one concise
 success entry for the group is queued to `aggregator.log` (the replacement for the old `rt` log
@@ -99,6 +150,153 @@ The prefix uses the
 NTP-synchronized clock and configured timezone/DST rules when the event enters
 the log queue, not when it is eventually published. Events before synchronization
 use `TIME_UNSYNCED` instead. Detailed serial messages are unchanged.
+
+### Independent CircuitPython account monitor
+
+[aio-status/code.py](aio-status/code.py) runs on a separate CircuitPython
+Wi-Fi board with `board.NEOPIXEL`, not on the aggregator. Copy it to the board
+as `code.py`. Keep the existing `settings.toml` entries `CIRCUITPY_WIFI_SSID`,
+`CIRCUITPY_WIFI_PASSWORD`, `aio_username`, `aio_key`, and `TIMEZONE`.
+Install matching CircuitPython bundle versions of `adafruit_io`,
+`adafruit_requests`, `adafruit_minimqtt`, `adafruit_connection_manager`,
+`adafruit_ticks`, and `neopixel`, including their bundle dependencies.
+Create both destination feeds before running:
+
+- `aggregator.aio-status`: unchanged five-column CSV value:
+  `timestamp,remaining,average,samples,minimum`. Statistics cover successful
+  HTTP observations in each approximately 30-second interval. Remaining
+  capacity is limit minus active usage, not usage itself.
+- `aggregator.aio-events`: timestamped JSON events and periodic rate snapshots.
+  Event kinds include startup, connection/failure, broker error/throttle,
+  failed rate checks/writes, missing samples, and replaced status reports.
+  Rate snapshots include optional authorization/ban fields when returned by
+  the API, local failure/drop counts, and free heap. Missing optional fields
+  remain absent; no ban semantics are inferred from undocumented values.
+
+One `get_user_rate_info()` call per approximately one-second sample supplies
+both active and limit values. Full responses and full MQTT notification text
+print to serial; remote event detail is truncated to 120 characters and
+optional rate text to 40 characters. Raw MiniMQTT subscriptions to
+`{username}/errors` and `{username}/throttle` capture text without the IO_MQTT
+wrapper's exception-based error handling. These topics are not packet traces;
+do not assume every error affecting a different client will reach this board.
+
+Status reports are generated every 30 seconds; rate snapshots every 60 seconds.
+Event-feed writes are limited to one per 30 seconds, with important events
+ahead of replaceable rate snapshots. Both feeds share a minimum two-second
+write spacing and 15-second attempt spacing: at most about four normal feed
+writes per minute total. HTTP reads have a separate request allowance.
+Callbacks only record events, never publish. Writes are deferred for 60 seconds
+after a throttle notification, an HTTP throttle exception, exhausted sampled
+capacity, or a failed write. Publishing also requires a successful sample no
+older than five seconds and at least five remaining actions of headroom.
+These checks cannot reserve capacity against other account writers.
+
+The RAM event FIFO holds 16 entries; overflow prints explicitly and counts
+dropped newest events. Only the latest unsent status and rate snapshots are
+retained. Replaced status intervals are counted/reported; intervals with no
+successful samples are reported as events instead of fabricated zero readings.
+Failed writes retain their payload for retry, but an ambiguous HTTP failure
+can still cause a duplicate on retry. A delayed report keeps its original
+timestamp. Queues do not survive power loss, and monitoring cannot capture
+broker events during a disconnect or blocking HTTP operation.
+
+MQTT reconnect attempts are spaced by at least 15 seconds, with one library
+connection attempt per call. Socket timeout uses MiniMQTT's one-second default,
+with a matching one-second loop timeout and ten-second receive timeout. Socket
+timeout also affects connection setup; shortening it to accelerate polling can
+cause connection failures. Successful sample counts may be lower while MQTT
+servicing or HTTP calls block; reports preserve the actual sample count.
+Connection/loop exceptions print their type,
+representation, and exception chain when the runtime exposes it. MiniMQTT's
+info/warning/error messages also print the underlying connection failure before
+it is wrapped; debug packet logging stays disabled. This does not require
+`sys.print_exception`, which is unavailable on some CircuitPython runtimes.
+Pending connection-failure events
+are coalesced with a repeat count so retries cannot monopolize the event FIFO.
+Wi-Fi reconnection is attempted on that path.
+The existing LED thresholds are preserved. Periodic garbage collection remains,
+but the old scheduled automatic reload is removed to avoid deliberate gaps.
+Validate available sockets/heap and behavior on the actual monitor board;
+host tests simulate the loop, not CircuitPython TLS or networking.
+
+Run the focused host tests with `python -B -m unittest discover -s test -p test_aio_status.py`.
+
+### Pico 2 W duplicate-delivery monitor
+
+[aio-duplicates/code.py](aio-duplicates/code.py) is a separate CircuitPython
+program for a second monitor board. It does not replace the independent
+rate/error monitor or modify aggregator firmware. Install CircuitPython for
+Pico 2 W and matching bundle libraries `adafruit_io`, `adafruit_requests`,
+`adafruit_minimqtt`, `adafruit_connection_manager`, and `adafruit_ticks`,
+including their bundle dependencies. The program uses built-in `hashlib.new("sha256", data)`
+and does not require a NeoPixel or an SD card.
+The Pico's built-in `board.LED` provides a single heartbeat flash every five
+seconds and three flashes after each successful HTTP summary write (including
+startup). Failed/deferred writes do not trigger the three-flash pattern.
+The LED state machine adds no sleeps; existing blocking network operations can
+stretch pulse timing. Heartbeat indicates main-loop activity, not a guarantee
+that MQTT is connected.
+
+Create `aggregator.aio-duplicates`, then copy the program to the Pico's
+`CIRCUITPY` drive as `code.py`. Supply the same settings names used by the
+rate monitor: `CIRCUITPY_WIFI_SSID`, `CIRCUITPY_WIFI_PASSWORD`, `aio_username`,
+`aio_key`, and `TIMEZONE`. Do not commit credentials. Initial Wi-Fi/time setup
+failures stop visibly; subsequent MQTT failures are reported and retried.
+
+It subscribes at QoS 0 to `{username}/feeds/+`, plus `/errors` and `/throttle`.
+Using `+` excludes `/json` and `/csv` variants that could otherwise be mistaken
+for duplicates. The monitor's own output topic is excluded. Broker events print
+on serial; throttle notices defer summary writes. No subscription changes are
+made to other devices.
+
+Each feed is tracked independently by payload byte length and SHA-256 digest,
+with a 48-byte preview (decoded with replacement for incomplete/invalid UTF-8).
+Full payloads are not retained; digest matches are a practical identity check,
+not a mathematical guarantee of identical content. The default burst threshold
+is three total matching deliveries, no more than three seconds apart, within
+a window of at most ten seconds. A value change, idle gap, elapsed window,
+capacity eviction, or disconnect finalizes a burst. Continuous storms split
+into bounded windows. Two copies alone are not reported as a burst; individual
+repeats still print on serial. Threshold constants are at the top of the file.
+
+Serial output includes `REPEAT` lines, finalized JSON `REPORT` lines, networking
+errors, and a once-per-minute `HEALTH` line with reception, burst, capacity,
+queue/drop, failure and heap counts. `TRACE_ALL = True` additionally logs every
+base-feed message to serial (potentially verbose, with full payload contents).
+Capture serial externally if durable complete evidence is needed.
+
+Finalized reports contain the feed key, first/last local receipt timestamps,
+copy count, elapsed receipt time, payload length, full digest, preview, and
+termination reason. `span_s` uses monotonic time; it is not broker creation
+time. A startup report verifies output connectivity even before any bursts occur.
+The FIFO holds 16 pending reports and drops newest on overflow with an explicit
+serial message/count. Tracking is limited to 640 currently active feeds; capacity
+evictions are explicit and counted. Expired baselines are removed rather than
+retaining all feed payloads indefinitely.
+
+Summary attempts are separated by at least 30 seconds (at most two writes per
+minute). Before each attempt, one HTTP rate check must show at least five
+remaining account actions. Low headroom, throttle notices, or failed writes
+defer sending for 60 seconds. Callbacks never publish. Failed writes keep the
+report for retry; ambiguous HTTP failures can still duplicate a summary.
+All reports print locally before entering the bounded FIFO, so they remain
+observable over serial even if remote delivery is deferred or dropped.
+
+This records **observed broker deliveries**, not originating publisher identity
+or outbound MQTT retransmission flags. QoS 0 avoids subscriber-side QoS 1 retries,
+but permits lost observations. MQTT buffering during HTTP requests or scheduler
+delays can make delivered messages appear closer together than their original
+publish times. Reconnects clear baselines and print capture gaps; RAM evidence
+does not survive reset. It is a burst detector, not a durable all-feed recorder
+or proof that every identical value was an erroneous publish. Compare reports
+with feed exports, aggregator TX/ACK traces, and the independent capacity monitor.
+
+Host tests simulate interleaved bursts, normal periodic readings, reversions,
+payload bounds, queue/connection behavior and sending policy:
+`python -B -m unittest discover -s test -p test_aio_duplicates.py`.
+Verify TLS, dependency compatibility and actual free heap on the Pico before
+leaving it unattended.
 
 ### Main-firmware soak-test diagnostics
 
@@ -251,6 +449,9 @@ independently using the same row format. `weatherkitHour1` independently
 configures 21 enabled hour-1 outputs; `weatherkitHour2`, `weatherkitHour6`, and
 `weatherkitHour12` configure 21 outputs each for `hours2*`, `hours6*`, and `hours12*`.
 `weatherkitHour24` configures the corresponding 21 `hours24*` outputs.
+`weatherkitDay1` configures 56 outputs across whole-day, daytime, and overnight.
+Nested source fields use `object.field` paths, for example
+`daytimeForecast.temperatureMax`; ordinary root field names are unchanged.
 
 Rebuild, run the adapter/publisher tests, and upload after a configuration
 change. The default-mapping assertions in the adapter tests intentionally
@@ -284,9 +485,9 @@ fields such as the altitude-specific cloud covers may be absent. Each push is
 filtered against queued/acknowledged values; an entirely unchanged push creates
 no publish or log-feed entry. A changed group completes with
 `Sent feed group WeatherKit current - Number Updated: n` in `aggregator.log`.
-Hours 1, 2, 6, 12, and 24 are enabled; daily topics are not subscribed yet.
+Hours 1, 2, 6, 12, and 24 and day 1 are enabled; days 2 and 5 are not subscribed.
 
-MQTT-task delivery assembles messages up to 4096 bytes into an eight-message
+MQTT-task delivery assembles messages up to 4096 bytes into a nine-message
 raw inbox. Every main-loop update drains that inbox, even when publishing is
 blocked. Parsing, validation, and serial reporting run outside the MQTT receive
 mutex. Usable messages refresh per-topic health using their arrival time.
@@ -297,7 +498,7 @@ unchanged message refreshes health without adding an entry. This prevents
 repeated identical minute pushes from filling the backlog during an outage.
 Missing/invalid fields do not erase earlier accepted values.
 
-Genuine changed snapshots wait in a separate eight-entry FIFO behind one
+Genuine changed snapshots wait in a separate nine-entry FIFO behind one
 snapshot retained for two-second publish retries. Reversions such as A/B/A and
 cross-group arrival order are preserved; newer snapshots never overwrite
 accepted changes. The existing publisher still performs its final comparison
@@ -350,8 +551,8 @@ After uploading the main environment, wait for the next MQTT push and look for
 `WeatherKit m5: parsed 3 valid feed samples` and the equivalent m30 message.
 Verify the six existing minute feeds and both completion logs. A startup burst
 of all 26 current/minute values needs roughly 52 seconds, plus logs, to drain;
-arrival order determines which group publishes first. With hours 1, 2, 6, 12, and 24 also enabled,
-the startup burst is 131 values, roughly 262 seconds plus logs. This exceeds the
+arrival order determines which group publishes first. With hours 1, 2, 6, 12, and 24
+and day 1 also enabled, the startup burst is 187 values, roughly 374 seconds plus logs. This exceeds the
 64-entry publish queue; the adapter retains and retries groups as space opens,
 without increasing the publish rate. Subsequent updates are
 change-driven, not forced every five or thirty minutes. Do not run another
@@ -388,7 +589,7 @@ Unchanged pushes create no publishes or completion logs.
 `weatherkitHour2`, following the legacy [hour-2 handler](circuitpython/Apple_Weatherkit/f2.py).
 Fields, conversions, validation, FIFO retries, and change detection match hour 1.
 Visibility is whole miles, correcting the legacy handler's raw-meter output.
-Daily subscriptions are not enabled.
+Day 1 is enabled; days 2 and 5 remain disabled.
 
 After uploading, expect `WeatherKit hour2: parsed 21 valid feed samples` when all
 fields are present, updates to the existing `hours2*` feeds, and
@@ -441,9 +642,41 @@ all fields are present, updates to existing `hours24*` feeds, and
 `Sent feed group WeatherKit hour24 - Number Updated: 21` in `aggregator.log`.
 Hour-24 freshness participates in the WeatherKit pixel and appears in
 `aggregator.diag` as `forecast_hours_24`. Unchanged pushes refresh freshness
-without consuming change-backlog entries. Allow about five minutes plus source
-arrival time for the complete 131-output startup burst and logs. Publish queue
-capacity rejections retain groups for retry; daily forecasts remain disabled.
+without consuming change-backlog entries. Publish queue capacity rejections
+retain groups for retry.
+
+### WeatherKit day-1 forecast
+
+`forecast_days_1` uses 56 independently configurable mappings in
+`weatherkitDay1`, covering the legacy [overnight handler](circuitpython/Apple_Weatherkit/f6.py)
+and [whole-day/daytime handler](circuitpython/Apple_Weatherkit/f6a.py):
+
+- 26 root fields publish to `days1*`.
+- 15 `daytimeForecast` fields publish to `days1daytime*`.
+- 15 `overnightForecast` fields publish to `days1ovnt*`.
+
+Temperatures become Fahrenheit with one decimal, wind speeds whole mph,
+wind direction compass text, and fractional cloud/humidity/precipitation chances
+whole percentages. Precipitation/snow amounts remain mm. UV index remains raw;
+moon phase and celestial/forecast timestamps remain provider text. Missing/null
+moonrise or moonset may be legitimate and are skipped, never fabricated as `"0"`.
+Absent or invalid nested objects do not prevent valid root/other-period values
+from publishing. Days 2 and 5 are not enabled and are not chained from day 1.
+
+The entire day-1 payload is one source group, not three independent MQTT topics.
+Its up to 56 changed outputs fit atomically in the existing 64-entry publish
+queue; the adapter retains the group until enough space opens. It shares the
+same FIFO, change filter, two-second pacing, and counted completion log.
+Usable day-1 data participates in the WeatherKit pixel and appears as
+`forecast_days_1` in `aggregator.diag`.
+
+After uploading, look for `WeatherKit day1: parsed 56 valid feed samples`
+(fewer if provider fields are absent), updates to the three day-1 feed sets, and
+`Sent feed group WeatherKit day1 - Number Updated: 56` on a complete initial
+payload. Repeated unchanged pushes do not consume backlog space. The complete
+187-output startup burst across nine groups takes about seven minutes plus
+source arrival time and any connection delays. Publish queue-full retries are
+expected while the large group waits; receive-discard counters should remain zero.
 
 ### Planned weather collection and publishing
 
@@ -667,7 +900,7 @@ These calls should remain on the main loop task, not interrupt handlers.
 
 AIO and WeatherKit use the same MQTT connection. Pixel 1 reports transport and
 publish acknowledgement health; pixel 2 tracks reception separately for current,
-m5, m30, hour1, hour2, hour6, hour12, and hour24. Unchanged valid payloads refresh reception health. Malformed,
+m5, m30, hour1, hour2, hour6, hour12, hour24, and day1. Unchanged valid payloads refresh reception health. Malformed,
 unusable, incomplete, or discarded messages do not. Reception is validated even
 when the output queue is blocked, using the message's actual arrival time.
 Groups with all mappings disabled are excluded. A disabled service's pixel is off.

@@ -6,6 +6,11 @@
 #include <WiFi.h>
 #include <esp_system.h>
 #include <esp_timer.h>
+#include <HTTPClient.h>
+#include <WiFiClientSecure.h>
+#include <ArduinoJson.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 #include <atomic>
 #include <cctype>
@@ -32,6 +37,9 @@ namespace {
 constexpr uint32_t kPublishIntervalMs = 2000;
 constexpr uint32_t kPublishTimeoutMs = 30000;
 constexpr uint32_t kMqttStartRetryMs = 15000;
+constexpr uint32_t kRatePollMs = 60000;
+constexpr uint32_t kRateRetryMs = 15000;
+constexpr uint32_t kThrottlePauseMs = 60000;
 constexpr size_t kMaxQueuedPublishes = 64;
 constexpr size_t kMaxFeedKeyLength = 64;
 constexpr size_t kMaxValueLength = 512;
@@ -94,6 +102,8 @@ std::atomic<int> acknowledgedMessageId{0};
 std::atomic<int> mqttError{0};
 std::atomic<bool> brokerReportedError{false};
 std::atomic<bool> brokerReportedThrottle{false};
+uint32_t brokerThrottleEvents = 0;
+char brokerThrottleText[192] = {};
 char errorsTopic[96] = {};
 char throttleTopic[96] = {};
 struct WeatherSubscription {
@@ -116,6 +126,7 @@ WeatherSubscription weatherSubscriptions[] = {
     {"forecast_hours_6", weatherkit_current::Group::Hour6},
     {"forecast_hours_12", weatherkit_current::Group::Hour12},
     {"forecast_hours_24", weatherkit_current::Group::Hour24},
+    {"forecast_days_1", weatherkit_current::Group::Day1},
 };
 bool configured = false;
 bool clockSynchronized = false;
@@ -166,6 +177,160 @@ bool recoveryDiagnosticPending = false;
 uint32_t diagnosticLastAt = 0;
 uint32_t diagnosticRecoveryCount = 0;
 uint32_t diagnosticCoalesced = 0;
+
+struct RateResult {
+  bool valid = false;
+  int status = 0;
+  uint32_t limit = 0;
+  uint32_t active = 0;
+  uint32_t at = 0;
+};
+std::mutex rateLock;
+RateResult rateResult;
+bool rateResultPending = false;
+bool rateWorkerRunning = false;
+RateResult lastRate;
+bool rateAttempted = false;
+uint32_t rateAttemptAt = 0;
+bool rateRefreshRequested = true;
+uint32_t rateFailures = 0;
+uint32_t throttleEvents = 0;
+bool throttlePaused = false;
+uint32_t throttleAt = 0;
+
+bool parseRate(const char* body, size_t length, RateResult& result) {
+  JsonDocument document;
+  if (length > 512 || deserializeJson(document, body, length)) {
+    return false;
+  }
+  const JsonVariantConst limit = document["data_rate_limit"];
+  const JsonVariantConst active = document["active_data_rate"];
+  if (!limit.is<uint32_t>() || !active.is<uint32_t>() ||
+      limit.as<uint32_t>() == 0) {
+    return false;
+  }
+  result.limit = limit.as<uint32_t>();
+  result.active = active.as<uint32_t>();
+  return true;
+}
+
+class RateBody : public Stream {
+ public:
+  char data[512] = {};
+  size_t length = 0;
+  bool overflow = false;
+
+  size_t write(uint8_t byte) override { return write(&byte, 1); }
+  size_t write(const uint8_t* bytes, size_t size) override {
+    const size_t copied = size < sizeof(data) - length ? size : sizeof(data) - length;
+    memcpy(data + length, bytes, copied);
+    length += copied;
+    overflow = overflow || copied != size;
+    return size;
+  }
+  int available() override { return 0; }
+  int read() override { return -1; }
+  int peek() override { return -1; }
+  void flush() override {}
+};
+
+RateResult fetchRate() {
+  RateResult result;
+  WiFiClientSecure transport;
+  transport.setCACert(kRootCa);
+  transport.setHandshakeTimeout(5);
+  HTTPClient http;
+  http.setConnectTimeout(4000);
+  http.setTimeout(4000);
+  const std::string url =
+      std::string("https://io.adafruit.com/api/v2/") + AIO_USERNAME + "/throttle";
+  if (http.begin(transport, url.c_str())) {
+    http.addHeader("X-AIO-Key", AIO_KEY);
+    result.status = http.GET();
+    if (result.status == HTTP_CODE_OK) {
+      RateBody body;
+      const int read = http.writeToStream(&body);
+      result.valid = read >= 0 && !body.overflow &&
+          parseRate(body.data, body.length, result);
+    }
+    http.end();
+  }
+  result.at = millis();
+  return result;
+}
+
+void rateTask(void*) {
+  const RateResult result = fetchRate();
+  {
+    std::lock_guard<std::mutex> guard(rateLock);
+    rateResult = result;
+    rateResultPending = true;
+    rateWorkerRunning = false;
+  }
+  vTaskDelete(nullptr);
+}
+
+void pausePublishing(uint32_t now) {
+  throttlePaused = true;
+  throttleAt = now;
+}
+
+void updateRate(bool ready, uint32_t now) {
+  RateResult result;
+  bool received = false;
+  {
+    std::lock_guard<std::mutex> guard(rateLock);
+    if (rateResultPending) {
+      result = rateResult;
+      rateResultPending = false;
+      received = true;
+    }
+  }
+  if (received) {
+    if (result.valid) {
+      lastRate = result;
+      Serial.printf("AIO rate: active=%lu limit=%lu\n",
+                    static_cast<unsigned long>(result.active),
+                    static_cast<unsigned long>(result.limit));
+      if (result.active >= result.limit) {
+        pausePublishing(now);
+        Serial.println("AIO: account rate exhausted; new publishes paused for 60 seconds");
+      }
+    } else {
+      ++rateFailures;
+      Serial.printf("AIO ERROR: account rate check failed (HTTP=%d; transport or invalid response)\n",
+                    result.status);
+      if (result.status == 429) {
+        pausePublishing(now);
+      }
+    }
+  }
+  if (throttlePaused && now - throttleAt >= kThrottlePauseMs) {
+    throttlePaused = false;
+    rateRefreshRequested = true;
+    Serial.println("AIO: throttle cooldown elapsed; resuming paced publishes");
+  }
+  if (!ready || (rateAttempted &&
+      now - rateAttemptAt < (rateRefreshRequested ? kRateRetryMs : kRatePollMs))) {
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> guard(rateLock);
+    if (rateWorkerRunning) {
+      return;
+    }
+    rateWorkerRunning = true;
+  }
+  rateAttempted = true;
+  rateAttemptAt = now;
+  rateRefreshRequested = false;
+  if (xTaskCreate(rateTask, "aio-rate", 8192, nullptr, 1, nullptr) != pdPASS) {
+    std::lock_guard<std::mutex> guard(rateLock);
+    rateWorkerRunning = false;
+    ++rateFailures;
+    Serial.println("AIO ERROR: unable to start account rate check task");
+  }
+}
 
 void trackQueueHighWater() {
   const size_t size = pending.size() + pendingLogs.size();
@@ -272,6 +437,18 @@ void onMqttEvent(void*, esp_event_base_t, int32_t eventId, void* eventData) {
                        strlen(throttleTopic) &&
                    memcmp(event->topic, throttleTopic,
                           strlen(throttleTopic)) == 0) {
+          {
+            std::lock_guard<std::mutex> guard(diagnosticLock);
+            ++brokerThrottleEvents;
+            const size_t length = event->data_len > 0
+                ? static_cast<size_t>(event->data_len) : 0;
+            const size_t copied = length < sizeof(brokerThrottleText) - 1
+                ? length : sizeof(brokerThrottleText) - 1;
+            if (copied) {
+              memcpy(brokerThrottleText, event->data, copied);
+            }
+            brokerThrottleText[copied] = '\0';
+          }
           brokerReportedThrottle.store(true);
         }
       }
@@ -440,7 +617,7 @@ MqttDiagnostics diagnosticSnapshot() {
 
 bool captureDiagnostic(const char* reason, bool wifiConnected, uint32_t now,
                        const MqttDiagnostics& mqtt) {
-  char ages[288] = {};
+  char ages[320] = {};
   size_t used = 0;
   for (const WeatherSubscription& subscription : weatherSubscriptions) {
     const auto source = weatherkit_current::sourceStatus(subscription.group, now);
@@ -475,6 +652,11 @@ bool captureDiagnostic(const char* reason, bool wifiConnected, uint32_t now,
   const uint32_t longestMs =
       outageMs > mqtt.longestOutageMs ? outageMs : mqtt.longestOutageMs;
   const auto drops = weatherkit_current::discardStatus();
+  char rateAge[16] = "-";
+  if (lastRate.valid) {
+    snprintf(rateAge, sizeof(rateAge), "%lu",
+             static_cast<unsigned long>((now - lastRate.at) / 1000));
+  }
   const int written = snprintf(
       summary, sizeof(summary),
       "%s %s up_s=%lld reset=%d\n"
@@ -482,6 +664,7 @@ bool captureDiagnostic(const char* reason, bool wifiConnected, uint32_t now,
       "ack=%lu timeout=%lu enq_fail=%lu group_reject=%lu "
       "queue=%u log_wait=%u high=%u log_drop=%lu diag_coalesced=%lu\n"
       "inflight_id=%d age_s=%lu\n"
+      "rate=%lu/%lu age_s=%s fail=%lu throttle=%lu pause_s=%lu\n"
       "last_error details=%s type=%d esp=%d tls=%d cert=0x%x errno=%d refusal=%d age_s=%lu\n"
       "wk_drop=%lu assembly/raw/invalid/change=%lu/%lu/%lu/%lu age_s %s\n"
       "wifi=%s rssi=%ld heap=%lu min=%lu",
@@ -504,6 +687,13 @@ bool captureDiagnostic(const char* reason, bool wifiConnected, uint32_t now,
       static_cast<unsigned long>(coalesced),
       outstandingMessageId,
       static_cast<unsigned long>(outstandingMessageId ? (now - outstandingAt) / 1000 : 0),
+      static_cast<unsigned long>(lastRate.active),
+      static_cast<unsigned long>(lastRate.limit),
+      rateAge,
+      static_cast<unsigned long>(rateFailures),
+      static_cast<unsigned long>(throttleEvents),
+      static_cast<unsigned long>(throttlePaused && now - throttleAt < kThrottlePauseMs
+          ? (kThrottlePauseMs - (now - throttleAt)) / 1000 : 0),
       mqtt.errorDetails ? "yes" : "no", mqtt.errorType, mqtt.espError,
       mqtt.tlsError, static_cast<unsigned>(mqtt.certFlags), mqtt.socketError,
       mqtt.refusalCode,
@@ -592,7 +782,7 @@ void begin() {
       subscription.topic = std::string(AIO_USERNAME) + "/integration/weather/" +
                            AIO_WEATHER_LOCATION_ID + "/" + subscription.type;
     }
-    Serial.println("WeatherKit: current, m5, m30, hour1, hour2, hour6, hour12, hour24 enabled; first data waits for next MQTT push");
+    Serial.println("WeatherKit: current, m5, m30, hour1, hour2, hour6, hour12, hour24, day1 enabled; first data waits for next MQTT push");
   } else {
     Serial.println("WeatherKit: disabled; configure AIO_WEATHER_LOCATION_ID");
   }
@@ -627,6 +817,7 @@ void update(bool wifiConnected, bool timeSynchronized, uint32_t now) {
     if (connected) {
       queueMqttLog("MQTT connected");
     } else {
+      rateRefreshRequested = true;
       queueMqttLog("MQTT disconnected");
     }
   }
@@ -683,12 +874,26 @@ void update(bool wifiConnected, bool timeSynchronized, uint32_t now) {
     Serial.println("AIO ERROR: Adafruit IO reported an account error");
   }
   if (brokerReportedThrottle.exchange(false)) {
+    {
+      std::lock_guard<std::mutex> guard(diagnosticLock);
+      throttleEvents = brokerThrottleEvents;
+      Serial.printf("AIO throttle notice (first 191 bytes): %s\n", brokerThrottleText);
+    }
+    pausePublishing(now);
+    rateRefreshRequested = true;
     publishProblem = true;
-    Serial.println("AIO ERROR: Adafruit IO reported publish throttling");
+    Serial.println("AIO ERROR: Adafruit IO reported publish throttling; new publishes paused for 60 seconds");
   }
+  updateRate(wifiConnected && timeSynchronized, now);
 
   const int ackId = acknowledgedMessageId.exchange(0);
+  if (ackId != 0 && ackId != outstandingMessageId) {
+    Serial.printf("AIO ACK unmatched: id=%d expected=%d\n", ackId, outstandingMessageId);
+  }
   if (ackId != 0 && ackId == outstandingMessageId) {
+    Serial.printf("AIO ACK: id=%d age_ms=%lu topic=%s\n", ackId,
+                  static_cast<unsigned long>(now - outstandingAt),
+                  pending.empty() ? "-" : pending.front().topic.c_str());
     ++acknowledgedPublishes;
     completePublish();
     haveAcknowledgement = true;
@@ -724,6 +929,7 @@ void update(bool wifiConnected, bool timeSynchronized, uint32_t now) {
   updateDiagnostics(wifiConnected);
   if (!wifiConnected || !connected || pending.empty() ||
       outstandingMessageId != 0 ||
+      throttlePaused ||
       now - lastPublishAt < kPublishIntervalMs) {
     return;
   }
@@ -749,6 +955,14 @@ void update(bool wifiConnected, bool timeSynchronized, uint32_t now) {
   outstandingMessageId = messageId;
   outstandingAt = static_cast<uint32_t>(now);
   lastPublishAt = static_cast<uint32_t>(now);
+  uint32_t fingerprint = 2166136261u;
+  for (unsigned char byte : next.value) {
+    fingerprint = (fingerprint ^ byte) * 16777619u;
+  }
+  Serial.printf("AIO TX: id=%d at_ms=%lu topic=%s bytes=%u hash=%08lx\n",
+                messageId, static_cast<unsigned long>(now), next.topic.c_str(),
+                static_cast<unsigned>(next.value.size()),
+                static_cast<unsigned long>(fingerprint));
 }
 
 HealthStatus health(uint32_t now) {
@@ -762,7 +976,7 @@ HealthStatus health(uint32_t now) {
     return healthStarted && now - unavailableSince >= kPublishTimeoutMs
                ? HealthStatus::Red : HealthStatus::Amber;
   }
-  if (!haveAcknowledgement || publishProblem ||
+  if (!haveAcknowledgement || publishProblem || throttlePaused ||
       (outstandingMessageId != 0 && now - outstandingAt >= 10000)) {
     return HealthStatus::Amber;
   }

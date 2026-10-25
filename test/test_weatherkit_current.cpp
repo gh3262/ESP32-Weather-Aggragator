@@ -2,6 +2,7 @@
 
 #include <cassert>
 #include <map>
+#include "weatherkit_day_fixture.h"
 
 TestSerial Serial;
 uint32_t testMillis = 0;
@@ -369,6 +370,69 @@ int main() {
   assert(submissions == hour24Submissions);
 
   reset();
+  expectedGroup = "WeatherKit day1";
+  const size_t dayLength = strlen(kDay1Payload);
+  receive(Group::Day1, kDay1Payload, 37, 0, dayLength);
+  update(0);
+  assert(submissions == 0);
+  receive(Group::None, kDay1Payload + 37, dayLength - 37, 37, dayLength);
+  update(1);
+  const std::map<std::string, std::string> expectedDay1 = {
+      {"days1start", "2026-10-25T05:00:00Z"}, {"days1end", "2026-10-26T05:00:00Z"},
+      {"days1conditioncode", "Clear"}, {"days1maxuvindex", "3"}, {"days1moonphase", "Full"},
+      {"days1moonrise", "2026-10-25T22:00:00Z"}, {"days1moonset", "2026-10-25T10:00:00Z"},
+      {"days1precipitationamount", "0"}, {"days1precipitationchance", "65"},
+      {"days1precipitationtype", "clear"}, {"days1snowfallamount", "0"},
+      {"days1solarmidnight", "2026-10-25T05:30:00Z"},
+      {"days1solarnoon", "2026-10-25T17:30:00Z"}, {"days1sunrise", "2026-10-25T12:00:00Z"},
+      {"days1sunrisecivil", "2026-10-25T11:30:00Z"},
+      {"days1sunrisenautical", "2026-10-25T11:00:00Z"},
+      {"days1sunriseastronomical", "2026-10-25T10:30:00Z"},
+      {"days1sunset", "2026-10-25T23:00:00Z"}, {"days1sunsetcivil", "2026-10-25T23:30:00Z"},
+      {"days1sunsetnautical", "2026-10-26T00:00:00Z"},
+      {"days1sunsetastronomical", "2026-10-26T00:30:00Z"},
+      {"days1temperaturemax", "68.0"}, {"days1temperaturemin", "50.0"},
+      {"days1windgustspeedmax", "20"}, {"days1windspeedavg", "10"}, {"days1windspeedmax", "15"},
+      {"days1daytimestart", "2026-10-25T12:00:00Z"},
+      {"days1daytimeend", "2026-10-25T23:00:00Z"},
+      {"days1daytimecloudcover", "25"}, {"days1daytimeconditioncode", "MostlyClear"},
+      {"days1daytimehumidity", "65"}, {"days1daytimeprecipitationamount", "0"},
+      {"days1daytimeprecipitationchance", "50"}, {"days1daytimeprecipitationtype", "rain"},
+      {"days1daytimesnowfallamount", "0"}, {"days1daytimetemperaturemax", "68.0"},
+      {"days1daytimetemperaturemin", "50.0"}, {"days1daytimewinddirection", "SW"},
+      {"days1daytimewindgustspeedmax", "20"}, {"days1daytimewindspeed", "10"},
+      {"days1daytimewindspeedmax", "15"},
+      {"days1ovntstart", "2026-10-25T23:00:00Z"}, {"days1ovntend", "2026-10-26T12:00:00Z"},
+      {"days1ovntcloudcover", "75"}, {"days1ovntconditioncode", "Cloudy"},
+      {"days1ovnthumidity", "80"}, {"days1ovntprecipitationamount", "1.25"},
+      {"days1ovntprecipitationchance", "75"}, {"days1ovntprecipitationtype", "snow"},
+      {"days1ovntsnowfallamount", "2"}, {"days1ovnttemperaturemax", "32.0"},
+      {"days1ovnttemperaturemin", "14.0"}, {"days1ovntwinddirection", "E"},
+      {"days1ovntwindgustspeedmax", "10"}, {"days1ovntwindspeed", "0"},
+      {"days1ovntwindspeedmax", "20"}};
+  assert(expectedDay1.size() == 56 && submitted == expectedDay1);
+  deliver(kDay1Payload, Group::Day1);
+  update(2);
+  assert(submissions == 1);
+  // Missing celestial events and malformed subobjects cannot fabricate values.
+  deliver(R"({"moonrise":null,"moonset":null,"daytimeForecast":[],
+    "overnightForecast":"bad","temperatureMax":21})", Group::Day1);
+  update(3);
+  assert(submitted.size() == 1 && submitted.at("days1temperaturemax") == "69.8");
+  const size_t daySubmissions = submissions;
+  deliver(R"({"daytimeForecast":{"humidity":2,"temperatureMax":-274,
+    "windDirection":361},"overnightForecast":{"snowfallAmount":-1}})", Group::Day1);
+  update(4);
+  assert(submissions == daySubmissions);
+  // A dotted literal key is not a substitute for a nested provider object.
+  deliver(R"({"daytimeForecast.humidity":0.5})", Group::Day1);
+  update(5);
+  assert(submissions == daySubmissions);
+  deliver(R"({"overnightForecast":{"temperatureMin":-11}})", Group::Day1);
+  update(6);
+  assert(submitted.size() == 1 && submitted.at("days1ovnttemperaturemin") == "12.2");
+
+  reset();
   assert(health(false, 0) == HealthStatus::Amber);
   assert(health(false, 29999) == HealthStatus::Amber);
   assert(health(false, 30000) == HealthStatus::Red);
@@ -380,7 +444,7 @@ int main() {
   assert(health(true, 0) == HealthStatus::Amber);
   // A blocked publisher must not hide fresh reception for other topics.
   acceptGroup = false;
-  const char* validHealth = R"({"precipitationIntensity":0})";
+  const char* validHealth = R"({"precipitationIntensity":0,"precipitationChance":0})";
   testMillis = 1000;
   for (const auto& source : sources) {
     deliver(validHealth, source.group);
@@ -398,19 +462,19 @@ int main() {
   }
   acceptGroup = false;
   expectedGroup = "WeatherKit current";
-  // Refresh the other topics, leaving hour24 stale.
+  // Refresh the other topics, leaving day1 stale.
   testMillis = 301001;
   for (const auto& source : sources) {
-    if (source.group != Group::Hour24) {
+    if (source.group != Group::Day1) {
       deliver(validHealth, source.group);
     }
   }
   update(301001);
   assert(health(true, 301001) == HealthStatus::Red);
-  deliver("not json", Group::Hour24);
+  deliver("not json", Group::Day1);
   update(301002);
   assert(health(true, 301002) == HealthStatus::Red);
-  deliver(validHealth, Group::Hour24);
+  deliver(validHealth, Group::Day1);
   update(301003);
   assert(health(true, 301003) == HealthStatus::Green);
   // Disabled groups do not hold the indicator amber.
@@ -497,7 +561,7 @@ int main() {
   for (uint32_t cycle = 0; cycle < 30; ++cycle) {
     testMillis = cycle * 60000;
     for (const auto& source : sources) {
-      deliver(R"({"precipitationIntensity":0})", source.group);
+      deliver(validHealth, source.group);
     }
     update(testMillis);
     assert(incoming.empty());
@@ -512,7 +576,7 @@ int main() {
     testMillis += 2000;
     update(testMillis);
     assert(submittedGroup == expectedGroup);
-    assert(submitted.size() == 1);
+    assert(submitted.size() >= 1 && submitted.size() <= 2);
   }
   assert(changes.empty() && waitingSamples.empty());
 
@@ -558,23 +622,23 @@ int main() {
   }
   assert(changes.size() == kMaxPendingSnapshots);
   testMillis = 100;
-  deliver(R"({"temperature":9})");
+  deliver(R"({"temperature":10})");
   update(100);
   assert(discardStatus().changeQueue == 1 && discardedMessages() == 1);
   assert(sourceStatus(Group::Current, 100).ageSeconds == 0);
-  assert(sources[0].acceptedValues.at("currenttemperature") == "46.4");
+  assert(sources[0].acceptedValues.at("currenttemperature") == "48.2");
   assert(Serial.output.find("changed-snapshot backlog full") != std::string::npos);
   // Losing a new transition at capacity must not mark it accepted.
   acceptGroup = true;
   update(2000);
   update(2001);
-  deliver(R"({"temperature":9})");
+  deliver(R"({"temperature":10})");
   update(2002);
-  assert(sources[0].acceptedValues.at("currenttemperature") == "48.2");
+  assert(sources[0].acceptedValues.at("currenttemperature") == "50.0");
   for (uint32_t now = 2003; now < 2012; ++now) {
     update(now);
   }
-  assert(submitted.at("currenttemperature") == "48.2");
+  assert(submitted.at("currenttemperature") == "50.0");
   assert(changes.empty() && waitingSamples.empty());
   assert(discardStatus().rawQueue == 0 && discardStatus().assembly == 0);
   assert(discardStatus().invalid == 0);
@@ -592,5 +656,5 @@ int main() {
   assert(changes.empty()); // Identical raw messages occupy one change entry.
   assert(submissions == 1);
 
-  puts("WeatherKit current, minute, hour1, hour2, hour6, hour12, and hour24 tests passed.");
+  puts("WeatherKit current, minute, hourly, and day1 tests passed.");
 }

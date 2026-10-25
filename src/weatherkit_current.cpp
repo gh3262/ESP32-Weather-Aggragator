@@ -20,7 +20,7 @@
 namespace weatherkit_current {
 namespace {
 constexpr size_t kMaxPayloadBytes = 4096;
-constexpr size_t kMaxPendingSnapshots = 8;
+constexpr size_t kMaxPendingSnapshots = 9;
 constexpr uint32_t kRetryMs = 2000;
 
 struct Sample {
@@ -70,6 +70,8 @@ Source sources[] = {
      sizeof(feed_config::weatherkitHour12) / sizeof(Mapping)},
     {Group::Hour24, feed_config::weatherkitHour24,
      sizeof(feed_config::weatherkitHour24) / sizeof(Mapping)},
+    {Group::Day1, feed_config::weatherkitDay1,
+     sizeof(feed_config::weatherkitDay1) / sizeof(Mapping)},
 };
 bool healthStarted = false;
 bool everConnected = false;
@@ -86,6 +88,7 @@ const char* groupName(Group group) {
     case Group::Hour6: return "WeatherKit hour6";
     case Group::Hour12: return "WeatherKit hour12";
     case Group::Hour24: return "WeatherKit hour24";
+    case Group::Day1: return "WeatherKit day1";
     default: return "WeatherKit unknown";
   }
 }
@@ -225,7 +228,10 @@ bool parse(const std::string& payload, std::vector<Sample>& samples,
       continue;
     }
     haveEnabledMapping = true;
-    const JsonVariantConst input = current[mapping.field];
+    const char* separator = strchr(mapping.field, '.');
+    const JsonVariantConst input = separator
+        ? current[std::string(mapping.field, separator - mapping.field)][separator + 1]
+        : current[mapping.field];
     std::string value;
     if (!convert(input, mapping, value)) {
       Serial.printf("%s: skipped missing/invalid field %s\n",
