@@ -172,7 +172,7 @@ void acknowledge() {
 }
 
 void drain() {
-  for (size_t i = 0; i < 256 &&
+  for (size_t i = 0; i < 320 &&
        (!aio_publisher::pending.empty() || !aio_publisher::pendingLogs.empty() ||
         !aio_publisher::pendingDiagnostic.empty()); ++i) {
     tick(clockMs + 2000);
@@ -364,7 +364,7 @@ int main() {
   assert(Serial.output.find("AIO ACK: id=") != std::string::npos);
 
   reset();
-  assert(subscribedTopics.size() == 11);
+  assert(subscribedTopics.size() == 12);
   assert(subscribedTopics[2] ==
          "test-user/integration/weather/test-location/current");
   assert(subscribedTopics[3] ==
@@ -383,6 +383,8 @@ int main() {
          "test-user/integration/weather/test-location/forecast_hours_24");
   assert(subscribedTopics[10] ==
          "test-user/integration/weather/test-location/forecast_days_1");
+  assert(subscribedTopics[11] ==
+         "test-user/integration/weather/test-location/forecast_days_2");
   assert(enqueueGroup("current", samples, 2));
   tick(1999);
   assert(sent.empty());
@@ -441,7 +443,7 @@ int main() {
   tick(2001);
   event(MQTT_EVENT_CONNECTED);
   tick(4000);
-  assert(subscribedTopics.size() == 22);
+  assert(subscribedTopics.size() == 24);
   assert(sent.size() == 1 && outstandingMessageId == originalId);
   event(MQTT_EVENT_PUBLISHED, originalId);
   tick(4001);
@@ -515,7 +517,7 @@ int main() {
   rejectSubscription = true;
   subscriptionCalls = 0;
   event(MQTT_EVENT_CONNECTED);
-  assert(subscriptionCalls == 11);
+  assert(subscriptionCalls == 12);
   tick(1);
   assert(Serial.output.find("subscription failed") != std::string::npos);
   for (const auto& subscription : weatherSubscriptions) {
@@ -931,6 +933,30 @@ int main() {
   reset();
   pending.clear();
   pendingLogs.clear();
+  minuteEvent(9, kDay1Payload);
+  tick(1);
+  assert(pending.size() == 56);
+  drain();
+  assert(sent.size() == 57);
+  assert(sent[0].topic == "test-user/feeds/days2start");
+  assert(sent[56].value ==
+         "20261024110442 Sent feed group WeatherKit day2 - Number Updated: 56");
+  minuteEvent(9, kDay1Payload);
+  tick(clockMs + 1);
+  assert(pending.empty() && sent.size() == 57);
+  minuteEvent(9, R"({"temperatureMax":21,"overnightForecast":{"temperatureMin":-11}})");
+  tick(clockMs + 1);
+  drain();
+  assert(sent[57].topic == "test-user/feeds/days2temperaturemax");
+  assert(sent[57].value == "69.8");
+  assert(sent[58].topic == "test-user/feeds/days2ovnttemperaturemin");
+  assert(sent[58].value == "12.2");
+  assert(sent[59].value ==
+         "20261024110442 Sent feed group WeatherKit day2 - Number Updated: 2");
+
+  reset();
+  pending.clear();
+  pendingLogs.clear();
   size_t sourceIndex = 0;
   std::vector<std::string> startupPayloads;
   for (const auto& source : weatherkit_current::sources) {
@@ -962,7 +988,7 @@ int main() {
     startupPayloads.push_back(json);
     minuteEvent(sourceIndex++, json);
   }
-  for (uint32_t now = 1; now <= 9; ++now) {
+  for (uint32_t now = 1; now <= 10; ++now) {
     tick(now);
   }
   assert(weatherkit_current::waitingSamples.size() == 21);
@@ -970,7 +996,7 @@ int main() {
   assert(rejectedGroups > 0);
   assert(weatherkit_current::discardedMessages() == 0);
   uint32_t nextPushAt = 60000;
-  for (size_t cycle = 0; cycle < 256 &&
+  for (size_t cycle = 0; cycle < 320 &&
        (!pending.empty() || !pendingLogs.empty() ||
         !weatherkit_current::waitingSamples.empty() ||
         !weatherkit_current::changes.empty()); ++cycle) {
@@ -1003,8 +1029,8 @@ int main() {
       ++feeds[publication.topic];
     }
   }
-  assert(dataPublishes == 187 && feeds.size() == 187);
-  assert(completionLogs == 9);
+  assert(dataPublishes == 243 && feeds.size() == 243);
+  assert(completionLogs == 10);
   for (const auto& feed : feeds) {
     assert(feed.second == 1);
   }
@@ -1119,6 +1145,7 @@ int main() {
   assert(startup.find("forecast_hours_12=-") != std::string::npos);
   assert(startup.find("forecast_hours_24=-") != std::string::npos);
   assert(startup.find("forecast_days_1=-") != std::string::npos);
+  assert(startup.find("forecast_days_2=-") != std::string::npos);
   assert(startup.find("wifi=up rssi=-55 heap=200000 min=180000") != std::string::npos);
   assert(startup.size() <= 1024);
   drain();

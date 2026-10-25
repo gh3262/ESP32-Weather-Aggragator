@@ -127,6 +127,7 @@ WeatherSubscription weatherSubscriptions[] = {
     {"forecast_hours_12", weatherkit_current::Group::Hour12},
     {"forecast_hours_24", weatherkit_current::Group::Hour24},
     {"forecast_days_1", weatherkit_current::Group::Day1},
+    {"forecast_days_2", weatherkit_current::Group::Day2},
 };
 bool configured = false;
 bool clockSynchronized = false;
@@ -617,7 +618,7 @@ MqttDiagnostics diagnosticSnapshot() {
 
 bool captureDiagnostic(const char* reason, bool wifiConnected, uint32_t now,
                        const MqttDiagnostics& mqtt) {
-  char ages[320] = {};
+  char ages[352] = {};
   size_t used = 0;
   for (const WeatherSubscription& subscription : weatherSubscriptions) {
     const auto source = weatherkit_current::sourceStatus(subscription.group, now);
@@ -782,7 +783,7 @@ void begin() {
       subscription.topic = std::string(AIO_USERNAME) + "/integration/weather/" +
                            AIO_WEATHER_LOCATION_ID + "/" + subscription.type;
     }
-    Serial.println("WeatherKit: current, m5, m30, hour1, hour2, hour6, hour12, hour24, day1 enabled; first data waits for next MQTT push");
+    Serial.println("WeatherKit: current, m5, m30, hour1, hour2, hour6, hour12, hour24, day1, day2 enabled; first data waits for next MQTT push");
   } else {
     Serial.println("WeatherKit: disabled; configure AIO_WEATHER_LOCATION_ID");
   }

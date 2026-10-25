@@ -433,6 +433,34 @@ int main() {
   assert(submitted.size() == 1 && submitted.at("days1ovnttemperaturemin") == "12.2");
 
   reset();
+  expectedGroup = "WeatherKit day2";
+  receive(Group::Day2, kDay1Payload, 37, 0, dayLength);
+  update(0);
+  assert(submissions == 0);
+  receive(Group::None, kDay1Payload + 37, dayLength - 37, 37, dayLength);
+  update(1);
+  std::map<std::string, std::string> expectedDay2;
+  for (const auto& sample : expectedDay1) {
+    expectedDay2.emplace("days2" + sample.first.substr(5), sample.second);
+  }
+  assert(expectedDay2.size() == 56 && submitted == expectedDay2);
+  deliver(kDay1Payload, Group::Day2);
+  update(2);
+  assert(submissions == 1);
+  deliver(R"({"moonrise":null,"moonset":null,"daytimeForecast":[],
+    "overnightForecast":"bad","temperatureMax":21})", Group::Day2);
+  update(3);
+  assert(submitted.size() == 1 && submitted.at("days2temperaturemax") == "69.8");
+  const size_t day2Submissions = submissions;
+  deliver(R"({"daytimeForecast":{"humidity":2,"temperatureMax":-274,
+    "windDirection":361},"overnightForecast":{"snowfallAmount":-1}})", Group::Day2);
+  update(4);
+  assert(submissions == day2Submissions);
+  deliver(R"({"overnightForecast":{"temperatureMin":-11}})", Group::Day2);
+  update(5);
+  assert(submitted.size() == 1 && submitted.at("days2ovnttemperaturemin") == "12.2");
+
+  reset();
   assert(health(false, 0) == HealthStatus::Amber);
   assert(health(false, 29999) == HealthStatus::Amber);
   assert(health(false, 30000) == HealthStatus::Red);
@@ -462,19 +490,19 @@ int main() {
   }
   acceptGroup = false;
   expectedGroup = "WeatherKit current";
-  // Refresh the other topics, leaving day1 stale.
+  // Refresh the other topics, leaving day2 stale.
   testMillis = 301001;
   for (const auto& source : sources) {
-    if (source.group != Group::Day1) {
+    if (source.group != Group::Day2) {
       deliver(validHealth, source.group);
     }
   }
   update(301001);
   assert(health(true, 301001) == HealthStatus::Red);
-  deliver("not json", Group::Day1);
+  deliver("not json", Group::Day2);
   update(301002);
   assert(health(true, 301002) == HealthStatus::Red);
-  deliver(validHealth, Group::Day1);
+  deliver(validHealth, Group::Day2);
   update(301003);
   assert(health(true, 301003) == HealthStatus::Green);
   // Disabled groups do not hold the indicator amber.
@@ -622,23 +650,23 @@ int main() {
   }
   assert(changes.size() == kMaxPendingSnapshots);
   testMillis = 100;
-  deliver(R"({"temperature":10})");
+  deliver(R"({"temperature":11})");
   update(100);
   assert(discardStatus().changeQueue == 1 && discardedMessages() == 1);
   assert(sourceStatus(Group::Current, 100).ageSeconds == 0);
-  assert(sources[0].acceptedValues.at("currenttemperature") == "48.2");
+  assert(sources[0].acceptedValues.at("currenttemperature") == "50.0");
   assert(Serial.output.find("changed-snapshot backlog full") != std::string::npos);
   // Losing a new transition at capacity must not mark it accepted.
   acceptGroup = true;
   update(2000);
   update(2001);
-  deliver(R"({"temperature":10})");
+  deliver(R"({"temperature":11})");
   update(2002);
-  assert(sources[0].acceptedValues.at("currenttemperature") == "50.0");
-  for (uint32_t now = 2003; now < 2012; ++now) {
+  assert(sources[0].acceptedValues.at("currenttemperature") == "51.8");
+  for (uint32_t now = 2003; now < 2013; ++now) {
     update(now);
   }
-  assert(submitted.at("currenttemperature") == "50.0");
+  assert(submitted.at("currenttemperature") == "51.8");
   assert(changes.empty() && waitingSamples.empty());
   assert(discardStatus().rawQueue == 0 && discardStatus().assembly == 0);
   assert(discardStatus().invalid == 0);
@@ -656,5 +684,5 @@ int main() {
   assert(changes.empty()); // Identical raw messages occupy one change entry.
   assert(submissions == 1);
 
-  puts("WeatherKit current, minute, hourly, and day1 tests passed.");
+  puts("WeatherKit current, minute, hourly, day1, and day2 tests passed.");
 }
