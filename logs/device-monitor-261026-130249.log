@@ -1,0 +1,460 @@
+WeatherKit hour6: parsed 21 valid feed samples
+AIO TX: id=28607 at_ms=20575 topic=danak/feeds/hours6start bytes=20 hash=a78f76c1
+WeatherKit day1: skipped missing/invalid field moonrise
+WeatherKit day1: parsed 55 valid feed samples
+WeatherKit hour1: parsed 21 valid feed samples
+WeatherKit hour12: parsed 21 valid feed samples
+WeatherKit m5: parsed 3 valid feed samples
+WeatherKit current: parsed 20 valid feed samples
+WeatherKit m30: parsed 3 valid feed samples
+WeatherKit hour24: parsed 21 valid feed samples
+WeatherKit day2: parsed 56 valid feed samples
+WeatherKit hour2: parsed 21 valid feed samples
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit day1: retaining snapshot for publish-queue retry
+AIO ACK: id=28607 age_ms=1221 topic=danak/feeds/hours6start
+AIO TX: id=61964 at_ms=22577 topic=danak/feeds/hours6cloudcover bytes=2 hash=8ae5c8d3
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit day1: retaining snapshot for publish-queue retry
+AIO ACK: id=61964 age_ms=342 topic=danak/feeds/hours6cloudcover
+AIO TX: id=59160 at_ms=24582 topic=danak/feeds/hours6conditioncode bytes=12 hash=c1052639
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit day1: retaining snapshot for publish-queue retry
+AIO ACK: id=59160 age_ms=400 topic=danak/feeds/hours6conditioncode
+AIO TX: id=21431 at_ms=26585 topic=danak/feeds/hours6daylight bytes=16 hash=a4358a59
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit day1: retaining snapshot for publish-queue retry
+AIO ACK: id=21431 age_ms=449 topic=danak/feeds/hours6daylight
+AIO TX: id=27412 at_ms=28587 topic=danak/feeds/hours6humidity bytes=2 hash=83e140a0
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit day1: retaining snapshot for publish-queue retry
+AIO ACK: id=27412 age_ms=509 topic=danak/feeds/hours6humidity
+AIO TX: id=54853 at_ms=30589 topic=danak/feeds/hours6precipitationamount bytes=1 hash=350ca8af
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit day1: retaining snapshot for publish-queue retry
+AIO ACK: id=54853 age_ms=629 topic=danak/feeds/hours6precipitationamount
+AIO TX: id=65083 at_ms=32591 topic=danak/feeds/hours6precipitationchance bytes=1 hash=350ca8af
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit day1: retaining snapshot for publish-queue retry
+AIO ACK: id=65083 age_ms=780 topic=danak/feeds/hours6precipitationchance
+AIO TX: id=12119 at_ms=34593 topic=danak/feeds/hours6precipitationtype bytes=5 hash=5c6e1222
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit day1: retaining snapshot for publish-queue retry
+AIO ACK: id=12119 age_ms=841 topic=danak/feeds/hours6precipitationtype
+AIO TX: id=51935 at_ms=36595 topic=danak/feeds/hours6precipitationintensity bytes=1 hash=350ca8af
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit day1: retaining snapshot for publish-queue retry
+AIO ACK: id=51935 age_ms=900 topic=danak/feeds/hours6precipitationintensity
+AIO TX: id=11491 at_ms=38597 topic=danak/feeds/hours6pressure bytes=7 hash=cba63fb6
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit day1: retaining snapshot for publish-queue retry
+AIO ACK: id=11491 age_ms=951 topic=danak/feeds/hours6pressure
+AIO TX: id=42131 at_ms=40600 topic=danak/feeds/hours6pressuretrend bytes=6 hash=a0cbfc13
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit day1: retaining snapshot for publish-queue retry
+AIO ACK: id=42131 age_ms=1060 topic=danak/feeds/hours6pressuretrend
+AIO TX: id=36408 at_ms=42602 topic=danak/feeds/hours6snowfallintensity bytes=1 hash=350ca8af
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit day1: retaining snapshot for publish-queue retry
+AIO ACK: id=36408 age_ms=129 topic=danak/feeds/hours6snowfallintensity
+AIO TX: id=18800 at_ms=44604 topic=danak/feeds/hours6snowfallamount bytes=1 hash=350ca8af
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit day1: retaining snapshot for publish-queue retry
+AIO ACK: id=18800 age_ms=188 topic=danak/feeds/hours6snowfallamount
+AIO TX: id=65032 at_ms=46605 topic=danak/feeds/hours6temperature bytes=4 hash=1b5e89dd
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour1: retaining snapshot for publish-queue retry
+AIO ACK: id=65032 age_ms=266 topic=danak/feeds/hours6temperature
+AIO TX: id=56428 at_ms=48614 topic=danak/feeds/hours6temperatureapparent bytes=4 hash=0f5e76f9
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour1: retaining snapshot for publish-queue retry
+AIO ACK: id=56428 age_ms=315 topic=danak/feeds/hours6temperatureapparent
+AIO TX: id=8758 at_ms=50622 topic=danak/feeds/hours6temperaturedewpoint bytes=4 hash=3ca2d15c
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour1: retaining snapshot for publish-queue retry
+AIO ACK: id=8758 age_ms=465 topic=danak/feeds/hours6temperaturedewpoint
+AIO TX: id=40126 at_ms=52630 topic=danak/feeds/hours6uvindex bytes=1 hash=350ca8af
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour1: retaining snapshot for publish-queue retry
+AIO ACK: id=40126 age_ms=526 topic=danak/feeds/hours6uvindex
+AIO TX: id=9142 at_ms=54639 topic=danak/feeds/hours6visibility bytes=2 hash=94f2a484
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour1: retaining snapshot for publish-queue retry
+AIO ACK: id=9142 age_ms=645 topic=danak/feeds/hours6visibility
+AIO TX: id=39047 at_ms=56647 topic=danak/feeds/hours6winddirection bytes=3 hash=ec50be04
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour1: retaining snapshot for publish-queue retry
+AIO ACK: id=39047 age_ms=728 topic=danak/feeds/hours6winddirection
+AIO TX: id=14787 at_ms=58647 topic=danak/feeds/hours6windgust bytes=1 hash=310ca263
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour1: retaining snapshot for publish-queue retry
+AIO ACK: id=14787 age_ms=746 topic=danak/feeds/hours6windgust
+AIO TX: id=51545 at_ms=60655 topic=danak/feeds/hours6windspeed bytes=1 hash=360caa42
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour1: retaining snapshot for publish-queue retry
+AIO ACK: id=51545 age_ms=796 topic=danak/feeds/hours6windspeed
+AIO: Sent feed group WeatherKit hour6 - Number Updated: 21
+AIO TX: id=57664 at_ms=62663 topic=danak/feeds/days1start bytes=20 hash=51b75adb
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour1: retaining snapshot for publish-queue retry
+AIO ACK: id=57664 age_ms=866 topic=danak/feeds/days1start
+AIO TX: id=13913 at_ms=64671 topic=danak/feeds/days1end bytes=20 hash=5056e416
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour1: retaining snapshot for publish-queue retry
+AIO ACK: id=13913 age_ms=917 topic=danak/feeds/days1end
+AIO TX: id=16836 at_ms=66681 topic=danak/feeds/days1conditioncode bytes=12 hash=c1052639
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour1: retaining snapshot for publish-queue retry
+AIO rate: active=27 limit=60
+AIO ACK: id=16836 age_ms=966 topic=danak/feeds/days1conditioncode
+AIO TX: id=3348 at_ms=68689 topic=danak/feeds/days1maxuvindex bytes=1 hash=310ca263
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour1: retaining snapshot for publish-queue retry
+AIO ACK: id=3348 age_ms=1016 topic=danak/feeds/days1maxuvindex
+AIO TX: id=40331 at_ms=70697 topic=danak/feeds/days1moonphase bytes=13 hash=fbda7e40
+AIO ACK: id=40331 age_ms=60 topic=danak/feeds/days1moonphase
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour1: retaining snapshot for publish-queue retry
+AIO TX: id=41249 at_ms=72705 topic=danak/feeds/days1moonset bytes=20 hash=4180b144
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour1: retaining snapshot for publish-queue retry
+AIO ACK: id=41249 age_ms=116 topic=danak/feeds/days1moonset
+AIO TX: id=3407 at_ms=74714 topic=danak/feeds/days1precipitationamount bytes=1 hash=350ca8af
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour1: retaining snapshot for publish-queue retry
+AIO ACK: id=3407 age_ms=235 topic=danak/feeds/days1precipitationamount
+AIO TX: id=53024 at_ms=76722 topic=danak/feeds/days1precipitationchance bytes=1 hash=350ca8af
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour1: retaining snapshot for publish-queue retry
+AIO ACK: id=53024 age_ms=296 topic=danak/feeds/days1precipitationchance
+AIO TX: id=55111 at_ms=78731 topic=danak/feeds/days1precipitationtype bytes=5 hash=5c6e1222
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour1: retaining snapshot for publish-queue retry
+AIO ACK: id=55111 age_ms=346 topic=danak/feeds/days1precipitationtype
+WeatherKit hour6: parsed 21 valid feed samples
+WeatherKit hour6 unchanged; no receive backlog entry
+WeatherKit hour1: parsed 21 valid feed samples
+WeatherKit hour1 unchanged; no receive backlog entry
+WeatherKit hour24: parsed 21 valid feed samples
+WeatherKit hour24 unchanged; no receive backlog entry
+WeatherKit day2: parsed 56 valid feed samples
+WeatherKit day2 unchanged; no receive backlog entry
+WeatherKit day1: skipped missing/invalid field moonrise
+WeatherKit day1: parsed 55 valid feed samples
+WeatherKit day1 unchanged; no receive backlog entry
+WeatherKit m5: parsed 3 valid feed samples
+WeatherKit m5 unchanged; no receive backlog entry
+WeatherKit hour12: parsed 21 valid feed samples
+WeatherKit hour12 unchanged; no receive backlog entry
+WeatherKit m30: parsed 3 valid feed samples
+WeatherKit m30 unchanged; no receive backlog entry
+WeatherKit current: parsed 20 valid feed samples
+WeatherKit current unchanged; no receive backlog entry
+WeatherKit hour2: parsed 21 valid feed samples
+WeatherKit hour2 unchanged; no receive backlog entry
+AIO TX: id=14216 at_ms=80738 topic=danak/feeds/days1snowfallamount bytes=1 hash=350ca8af
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour1: retaining snapshot for publish-queue retry
+AIO ACK: id=14216 age_ms=967 topic=danak/feeds/days1snowfallamount
+AIO TX: id=19443 at_ms=82746 topic=danak/feeds/days1solarmidnight bytes=20 hash=405952cb
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour1: retaining snapshot for publish-queue retry
+AIO ACK: id=19443 age_ms=1017 topic=danak/feeds/days1solarmidnight
+AIO TX: id=23357 at_ms=84755 topic=danak/feeds/days1solarnoon bytes=20 hash=583d6419
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour1: retaining snapshot for publish-queue retry
+AIO ACK: id=23357 age_ms=70 topic=danak/feeds/days1solarnoon
+AIO TX: id=55914 at_ms=86763 topic=danak/feeds/days1sunrise bytes=20 hash=13ec7a8c
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour1: retaining snapshot for publish-queue retry
+AIO ACK: id=55914 age_ms=115 topic=danak/feeds/days1sunrise
+AIO TX: id=15119 at_ms=88771 topic=danak/feeds/days1sunrisecivil bytes=20 hash=e1b1c5e9
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour1: retaining snapshot for publish-queue retry
+AIO ACK: id=15119 age_ms=165 topic=danak/feeds/days1sunrisecivil
+AIO TX: id=40638 at_ms=90771 topic=danak/feeds/days1sunrisenautical bytes=20 hash=280ac09b
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour12: retaining snapshot for publish-queue retry
+AIO ACK: id=40638 age_ms=220 topic=danak/feeds/days1sunrisenautical
+AIO TX: id=31913 at_ms=92774 topic=danak/feeds/days1sunriseastronomical bytes=20 hash=4c874eb1
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour12: retaining snapshot for publish-queue retry
+AIO ACK: id=31913 age_ms=276 topic=danak/feeds/days1sunriseastronomical
+AIO TX: id=40683 at_ms=94783 topic=danak/feeds/days1sunset bytes=20 hash=33f70449
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour12: retaining snapshot for publish-queue retry
+AIO ACK: id=40683 age_ms=435 topic=danak/feeds/days1sunset
+AIO TX: id=11305 at_ms=96791 topic=danak/feeds/days1sunsetcivil bytes=20 hash=dd180db2
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour12: retaining snapshot for publish-queue retry
+AIO ACK: id=11305 age_ms=487 topic=danak/feeds/days1sunsetcivil
+AIO TX: id=11447 at_ms=98800 topic=danak/feeds/days1sunsetnautical bytes=20 hash=fd572f7e
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour12: retaining snapshot for publish-queue retry
+AIO ACK: id=11447 age_ms=535 topic=danak/feeds/days1sunsetnautical
+AIO TX: id=48957 at_ms=100809 topic=danak/feeds/days1sunsetastronomical bytes=20 hash=df3d434d
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour12: retaining snapshot for publish-queue retry
+AIO ACK: id=48957 age_ms=585 topic=danak/feeds/days1sunsetastronomical
+AIO TX: id=58164 at_ms=102817 topic=danak/feeds/days1temperaturemax bytes=4 hash=e4252081
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour12: retaining snapshot for publish-queue retry
+AIO ACK: id=58164 age_ms=695 topic=danak/feeds/days1temperaturemax
+AIO TX: id=227 at_ms=104825 topic=danak/feeds/days1temperaturemin bytes=4 hash=c16ce68a
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour12: retaining snapshot for publish-queue retry
+AIO ACK: id=227 age_ms=846 topic=danak/feeds/days1temperaturemin
+AIO TX: id=17337 at_ms=106833 topic=danak/feeds/days1windgustspeedmax bytes=1 hash=3d0cb547
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour12: retaining snapshot for publish-queue retry
+AIO ACK: id=17337 age_ms=986 topic=danak/feeds/days1windgustspeedmax
+AIO TX: id=2638 at_ms=108841 topic=danak/feeds/days1windspeedavg bytes=1 hash=360caa42
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour12: retaining snapshot for publish-queue retry
+AIO ACK: id=2638 age_ms=1137 topic=danak/feeds/days1windspeedavg
+AIO TX: id=1674 at_ms=110841 topic=danak/feeds/days1windspeedmax bytes=1 hash=300ca0d0
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour12: retaining snapshot for publish-queue retry
+AIO ACK: id=1674 age_ms=186 topic=danak/feeds/days1windspeedmax
+AIO TX: id=50901 at_ms=112849 topic=danak/feeds/days1daytimestart bytes=20 hash=49cf6c14
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour12: retaining snapshot for publish-queue retry
+AIO ACK: id=50901 age_ms=295 topic=danak/feeds/days1daytimestart
+AIO TX: id=36528 at_ms=114857 topic=danak/feeds/days1daytimeend bytes=20 hash=5ab14edd
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour12: retaining snapshot for publish-queue retry
+AIO ACK: id=36528 age_ms=346 topic=danak/feeds/days1daytimeend
+AIO TX: id=16253 at_ms=116866 topic=danak/feeds/days1daytimecloudcover bytes=2 hash=9101a8c2
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour12: retaining snapshot for publish-queue retry
+AIO ACK: id=16253 age_ms=486 topic=danak/feeds/days1daytimecloudcover
+AIO TX: id=63734 at_ms=118866 topic=danak/feeds/days1daytimeconditioncode bytes=12 hash=c1052639
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour12: retaining snapshot for publish-queue retry
+AIO ACK: id=63734 age_ms=625 topic=danak/feeds/days1daytimeconditioncode
+AIO TX: id=43940 at_ms=120874 topic=danak/feeds/days1daytimehumidity bytes=2 hash=8de5cd8c
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour12: retaining snapshot for publish-queue retry
+AIO ACK: id=43940 age_ms=675 topic=danak/feeds/days1daytimehumidity
+AIO TX: id=13409 at_ms=122882 topic=danak/feeds/days1daytimeprecipitationamount bytes=1 hash=350ca8af
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour12: retaining snapshot for publish-queue retry
+AIO ACK: id=13409 age_ms=807 topic=danak/feeds/days1daytimeprecipitationamount
+AIO TX: id=48687 at_ms=124891 topic=danak/feeds/days1daytimeprecipitationchance bytes=1 hash=350ca8af
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour12: retaining snapshot for publish-queue retry
+AIO ACK: id=48687 age_ms=856 topic=danak/feeds/days1daytimeprecipitationchance
+AIO TX: id=26736 at_ms=126899 topic=danak/feeds/days1daytimeprecipitationtype bytes=5 hash=5c6e1222
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour12: retaining snapshot for publish-queue retry
+AIO rate: active=33 limit=60
+AIO ACK: id=26736 age_ms=906 topic=danak/feeds/days1daytimeprecipitationtype
+AIO TX: id=46177 at_ms=128907 topic=danak/feeds/days1daytimesnowfallamount bytes=1 hash=350ca8af
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour12: retaining snapshot for publish-queue retry
+AIO ACK: id=46177 age_ms=1037 topic=danak/feeds/days1daytimesnowfallamount
+AIO TX: id=259 at_ms=130907 topic=danak/feeds/days1daytimetemperaturemax bytes=4 hash=9c12c0e6
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour12: retaining snapshot for publish-queue retry
+AIO ACK: id=259 age_ms=155 topic=danak/feeds/days1daytimetemperaturemax
+AIO TX: id=59727 at_ms=132915 topic=danak/feeds/days1daytimetemperaturemin bytes=4 hash=c16ce68a
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit m5: retaining snapshot for publish-queue retry
+AIO ACK: id=59727 age_ms=216 topic=danak/feeds/days1daytimetemperaturemin
+AIO TX: id=17888 at_ms=134924 topic=danak/feeds/days1daytimewinddirection bytes=3 hash=3c197352
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit m5: retaining snapshot for publish-queue retry
+AIO ACK: id=17888 age_ms=271 topic=danak/feeds/days1daytimewinddirection
+AIO TX: id=3405 at_ms=136929 topic=danak/feeds/days1daytimewindgustspeedmax bytes=1 hash=3d0cb547
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit m5: retaining snapshot for publish-queue retry
+AIO ACK: id=3405 age_ms=323 topic=danak/feeds/days1daytimewindgustspeedmax
+AIO TX: id=8144 at_ms=138934 topic=danak/feeds/days1daytimewindspeed bytes=1 hash=360caa42
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit current: retaining snapshot for publish-queue retry
+AIO ACK: id=8144 age_ms=416 topic=danak/feeds/days1daytimewindspeed
+AIO TX: id=4376 at_ms=140943 topic=danak/feeds/days1daytimewindspeedmax bytes=1 hash=310ca263
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit current: retaining snapshot for publish-queue retry
+AIO ACK: id=4376 age_ms=465 topic=danak/feeds/days1daytimewindspeedmax
+WeatherKit hour6: parsed 21 valid feed samples
+WeatherKit hour6 unchanged; no receive backlog entry
+WeatherKit hour24: parsed 21 valid feed samples
+WeatherKit hour24 unchanged; no receive backlog entry
+WeatherKit m5: parsed 3 valid feed samples
+WeatherKit m5 unchanged; no receive backlog entry
+WeatherKit day2: parsed 56 valid feed samples
+WeatherKit day2 unchanged; no receive backlog entry
+WeatherKit day1: skipped missing/invalid field moonrise
+WeatherKit day1: parsed 55 valid feed samples
+WeatherKit day1 unchanged; no receive backlog entry
+WeatherKit hour1: parsed 21 valid feed samples
+WeatherKit hour1 unchanged; no receive backlog entry
+WeatherKit hour12: parsed 21 valid feed samples
+WeatherKit hour12 unchanged; no receive backlog entry
+WeatherKit current: parsed 20 valid feed samples
+WeatherKit current unchanged; no receive backlog entry
+WeatherKit hour2: parsed 21 valid feed samples
+WeatherKit hour2 unchanged; no receive backlog entry
+WeatherKit m30: parsed 3 valid feed samples
+WeatherKit m30 unchanged; no receive backlog entry
+AIO TX: id=33951 at_ms=142950 topic=danak/feeds/days1ovntstart bytes=20 hash=5ab14edd
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit current: retaining snapshot for publish-queue retry
+AIO ACK: id=33951 age_ms=305 topic=danak/feeds/days1ovntstart
+AIO TX: id=57619 at_ms=144958 topic=danak/feeds/days1ovntend bytes=20 hash=db4b8399
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit current: retaining snapshot for publish-queue retry
+AIO ACK: id=57619 age_ms=445 topic=danak/feeds/days1ovntend
+AIO TX: id=58421 at_ms=146966 topic=danak/feeds/days1ovntcloudcover bytes=2 hash=07fe9280
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit current: retaining snapshot for publish-queue retry
+AIO ACK: id=58421 age_ms=585 topic=danak/feeds/days1ovntcloudcover
+AIO TX: id=42686 at_ms=148975 topic=danak/feeds/days1ovntconditioncode bytes=6 hash=73d12325
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit current: retaining snapshot for publish-queue retry
+AIO ACK: id=42686 age_ms=625 topic=danak/feeds/days1ovntconditioncode
+AIO TX: id=9032 at_ms=150984 topic=danak/feeds/days1ovnthumidity bytes=2 hash=8ce14ecb
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit current: retaining snapshot for publish-queue retry
+AIO ACK: id=9032 age_ms=788 topic=danak/feeds/days1ovnthumidity
+AIO TX: id=24132 at_ms=152984 topic=danak/feeds/days1ovntprecipitationamount bytes=1 hash=350ca8af
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit current: retaining snapshot for publish-queue retry
+AIO ACK: id=24132 age_ms=818 topic=danak/feeds/days1ovntprecipitationamount
+AIO TX: id=40811 at_ms=154984 topic=danak/feeds/days1ovntprecipitationchance bytes=1 hash=350ca8af
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit current: retaining snapshot for publish-queue retry
+AIO ACK: id=40811 age_ms=886 topic=danak/feeds/days1ovntprecipitationchance
+AIO TX: id=57442 at_ms=156993 topic=danak/feeds/days1ovntprecipitationtype bytes=5 hash=5c6e1222
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit current: retaining snapshot for publish-queue retry
+AIO ACK: id=57442 age_ms=997 topic=danak/feeds/days1ovntprecipitationtype
+AIO TX: id=48146 at_ms=159002 topic=danak/feeds/days1ovntsnowfallamount bytes=1 hash=350ca8af
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit current: retaining snapshot for publish-queue retry
+AIO ACK: id=48146 age_ms=1056 topic=danak/feeds/days1ovntsnowfallamount
+AIO TX: id=32926 at_ms=161011 topic=danak/feeds/days1ovnttemperaturemax bytes=4 hash=e4252081
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit current: retaining snapshot for publish-queue retry
+AIO ACK: id=32926 age_ms=155 topic=danak/feeds/days1ovnttemperaturemax
+AIO TX: id=16666 at_ms=163011 topic=danak/feeds/days1ovnttemperaturemin bytes=4 hash=9c7e51a0
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit current: retaining snapshot for publish-queue retry
+AIO ACK: id=16666 age_ms=304 topic=danak/feeds/days1ovnttemperaturemin
+AIO TX: id=36851 at_ms=165018 topic=danak/feeds/days1ovntwinddirection bytes=2 hash=5c028b25
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit current: retaining snapshot for publish-queue retry
+AIO ACK: id=36851 age_ms=455 topic=danak/feeds/days1ovntwinddirection
+AIO TX: id=61103 at_ms=167018 topic=danak/feeds/days1ovntwindgustspeedmax bytes=1 hash=320ca3f6
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit current: retaining snapshot for publish-queue retry
+AIO ACK: id=61103 age_ms=504 topic=danak/feeds/days1ovntwindgustspeedmax
+AIO TX: id=12914 at_ms=169026 topic=danak/feeds/days1ovntwindspeed bytes=1 hash=360caa42
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit current: retaining snapshot for publish-queue retry
+AIO ACK: id=12914 age_ms=644 topic=danak/feeds/days1ovntwindspeed
+AIO TX: id=13368 at_ms=171034 topic=danak/feeds/days1ovntwindspeedmax bytes=1 hash=310ca263
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit current: retaining snapshot for publish-queue retry
+AIO ACK: id=13368 age_ms=694 topic=danak/feeds/days1ovntwindspeedmax
+AIO: Sent feed group WeatherKit day1 - Number Updated: 55
+AIO TX: id=41572 at_ms=173041 topic=danak/feeds/aggregator.log bytes=68 hash=42e924b2
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit current: retaining snapshot for publish-queue retry
+AIO ACK: id=41572 age_ms=745 topic=danak/feeds/aggregator.log
+AIO: aggregator.log published
+AIO TX: id=25411 at_ms=175049 topic=danak/feeds/hours1start bytes=20 hash=a7e18463
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit current: retaining snapshot for publish-queue retry
+AIO ACK: id=25411 age_ms=827 topic=danak/feeds/hours1start
+AIO TX: id=49165 at_ms=177057 topic=danak/feeds/hours1cloudcover bytes=3 hash=6733d49c
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit current: retaining snapshot for publish-queue retry
+AIO ACK: id=49165 age_ms=915 topic=danak/feeds/hours1cloudcover
+AIO TX: id=23470 at_ms=179064 topic=danak/feeds/hours1conditioncode bytes=6 hash=73d12325
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit current: retaining snapshot for publish-queue retry
+AIO ACK: id=23470 age_ms=965 topic=danak/feeds/hours1conditioncode
+AIO TX: id=2673 at_ms=181071 topic=danak/feeds/hours1daylight bytes=16 hash=a4358a59
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit m30: retaining snapshot for publish-queue retry
+AIO ACK: id=2673 age_ms=1009 topic=danak/feeds/hours1daylight
+AIO TX: id=17075 at_ms=183072 topic=danak/feeds/hours1humidity bytes=2 hash=8ce38d62
+AIO ACK: id=17075 age_ms=113 topic=danak/feeds/hours1humidity
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit m30: retaining snapshot for publish-queue retry
+AIO TX: id=55651 at_ms=185079 topic=danak/feeds/hours1precipitationamount bytes=1 hash=350ca8af
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit m30: retaining snapshot for publish-queue retry
+AIO ACK: id=55651 age_ms=171 topic=danak/feeds/hours1precipitationamount
+AIO TX: id=54322 at_ms=187085 topic=danak/feeds/hours1precipitationchance bytes=1 hash=350ca8af
+AIO rate: active=37 limit=60
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour24: retaining snapshot for publish-queue retry
+AIO ACK: id=54322 age_ms=219 topic=danak/feeds/hours1precipitationchance
+AIO TX: id=25828 at_ms=189090 topic=danak/feeds/hours1precipitationtype bytes=5 hash=5c6e1222
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour24: retaining snapshot for publish-queue retry
+AIO ACK: id=25828 age_ms=275 topic=danak/feeds/hours1precipitationtype
+AIO TX: id=16429 at_ms=191099 topic=danak/feeds/hours1precipitationintensity bytes=1 hash=350ca8af
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour24: retaining snapshot for publish-queue retry
+AIO ACK: id=16429 age_ms=376 topic=danak/feeds/hours1precipitationintensity
+AIO TX: id=43463 at_ms=193099 topic=danak/feeds/hours1pressure bytes=7 hash=422935eb
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour24: retaining snapshot for publish-queue retry
+AIO ACK: id=43463 age_ms=446 topic=danak/feeds/hours1pressure
+AIO TX: id=49841 at_ms=195107 topic=danak/feeds/hours1pressuretrend bytes=7 hash=6aa25568
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour24: retaining snapshot for publish-queue retry
+AIO ACK: id=49841 age_ms=568 topic=danak/feeds/hours1pressuretrend
+AIO TX: id=3156 at_ms=197108 topic=danak/feeds/hours1snowfallintensity bytes=1 hash=350ca8af
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour24: retaining snapshot for publish-queue retry
+AIO ACK: id=3156 age_ms=725 topic=danak/feeds/hours1snowfallintensity
+AIO TX: id=51465 at_ms=199116 topic=danak/feeds/hours1snowfallamount bytes=1 hash=350ca8af
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour24: retaining snapshot for publish-queue retry
+AIO ACK: id=51465 age_ms=775 topic=danak/feeds/hours1snowfallamount
+WeatherKit hour6: parsed 21 valid feed samples
+WeatherKit hour6 unchanged; no receive backlog entry
+WeatherKit hour1: parsed 21 valid feed samples
+WeatherKit hour1 unchanged; no receive backlog entry
+WeatherKit day2: parsed 56 valid feed samples
+WeatherKit day2 unchanged; no receive backlog entry
+WeatherKit hour24: parsed 21 valid feed samples
+WeatherKit hour24 unchanged; no receive backlog entry
+WeatherKit day1: skipped missing/invalid field moonrise
+WeatherKit day1: parsed 55 valid feed samples
+WeatherKit day1 unchanged; no receive backlog entry
+WeatherKit hour2: parsed 21 valid feed samples
+WeatherKit hour2 unchanged; no receive backlog entry
+WeatherKit current: parsed 20 valid feed samples
+WeatherKit current unchanged; no receive backlog entry
+WeatherKit m30: parsed 3 valid feed samples
+WeatherKit m30 unchanged; no receive backlog entry
+WeatherKit hour12: parsed 21 valid feed samples
+WeatherKit hour12 unchanged; no receive backlog entry
+WeatherKit m5: parsed 3 valid feed samples
+WeatherKit m5 unchanged; no receive backlog entry
+AIO TX: id=44467 at_ms=201116 topic=danak/feeds/hours1temperature bytes=4 hash=9784e52d
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour24: retaining snapshot for publish-queue retry
+AIO ACK: id=44467 age_ms=245 topic=danak/feeds/hours1temperature
+AIO TX: id=32576 at_ms=203116 topic=danak/feeds/hours1temperatureapparent bytes=4 hash=4f60069f
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour24: retaining snapshot for publish-queue retry
+AIO ACK: id=32576 age_ms=345 topic=danak/feeds/hours1temperatureapparent
+AIO TX: id=39482 at_ms=205125 topic=danak/feeds/hours1temperaturedewpoint bytes=4 hash=3443703b
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour24: retaining snapshot for publish-queue retry
+AIO ACK: id=39482 age_ms=386 topic=danak/feeds/hours1temperaturedewpoint
+AIO TX: id=1190 at_ms=207126 topic=danak/feeds/hours1uvindex bytes=1 hash=360caa42
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour24: retaining snapshot for publish-queue retry
+AIO ACK: id=1190 age_ms=445 topic=danak/feeds/hours1uvindex
+AIO TX: id=64034 at_ms=209134 topic=danak/feeds/hours1visibility bytes=2 hash=88f291a0
+AIO ERROR: publish queue is full; feed group rejected
+WeatherKit hour24: retaining snapshot for publish-queue retry
+AIO ACK: id=64034 age_ms=495 topic=danak/feeds/hours1visibility
