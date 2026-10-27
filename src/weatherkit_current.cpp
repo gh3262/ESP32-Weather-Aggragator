@@ -20,7 +20,7 @@
 namespace weatherkit_current {
 namespace {
 constexpr size_t kMaxPayloadBytes = 4096;
-constexpr size_t kMaxPendingSnapshots = 10;
+constexpr size_t kMaxPendingSnapshots = 16;
 constexpr uint32_t kRetryMs = 2000;
 
 struct Sample {
@@ -74,6 +74,8 @@ Source sources[] = {
      sizeof(feed_config::weatherkitDay1) / sizeof(Mapping)},
     {Group::Day2, feed_config::weatherkitDay2,
      sizeof(feed_config::weatherkitDay2) / sizeof(Mapping)},
+    {Group::Day5, feed_config::weatherkitDay5,
+     sizeof(feed_config::weatherkitDay5) / sizeof(Mapping)},
 };
 bool healthStarted = false;
 bool everConnected = false;
@@ -92,6 +94,7 @@ const char* groupName(Group group) {
     case Group::Hour24: return "WeatherKit hour24";
     case Group::Day1: return "WeatherKit day1";
     case Group::Day2: return "WeatherKit day2";
+    case Group::Day5: return "WeatherKit day5";
     default: return "WeatherKit unknown";
   }
 }

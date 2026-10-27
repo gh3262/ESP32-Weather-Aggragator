@@ -319,10 +319,12 @@ It includes:
 - `outage_s current/last/max`: current outage age, last completed outage, and
   longest outage, including an ongoing outage. Initial connection waiting is
   not an outage.
-- `ack`, `timeout`, `enq_fail`, `group_reject`: matching publish acknowledgements
+- `ack`, `timeout`, `enq_fail`, `group_defer`: matching publish acknowledgements
   (weather, operational logs, and diagnostics), acknowledgement-timeout/reset
-  attempts, failed MQTT publish enqueues, and group rejections due to queue/cache
-  capacity. A retained group's repeated submission attempts count separately.
+  attempts, failed MQTT publish enqueues, and group admission deferrals due to
+  queue/cache capacity (previously `group_reject`). Deferred groups are retained
+  and retried, so a nonzero count is not data loss; true discards are reported
+  by `wk_drop`. A retained group's repeated attempts each count.
 - `queue`, `log_wait`, `high`: current shared publish queue size (including the
   in-flight head), operational logs waiting for promotion, and high-water mark
   of their combined size. The publish queue is bounded at 64 and the separate
@@ -486,7 +488,7 @@ fields such as the altitude-specific cloud covers may be absent. Each push is
 filtered against queued/acknowledged values; an entirely unchanged push creates
 no publish or log-feed entry. A changed group completes with
 `Sent feed group WeatherKit current - Number Updated: n` in `aggregator.log`.
-Hours 1, 2, 6, 12, and 24 and days 1 and 2 are enabled; day 5 is not subscribed.
+Hours 1, 2, 6, 12, and 24 and days 1, 2, and 5 are enabled.
 
 MQTT-task delivery assembles messages up to 4096 bytes into a ten-message
 raw inbox. Every main-loop update drains that inbox, even when publishing is
@@ -689,7 +691,9 @@ and [whole-day/daytime](circuitpython/Apple_Weatherkit/f7a.py) handlers:
 Nested paths, conversions, missing-field handling, atomic queue admission,
 FIFO retries, and change filtering match day 1. Each topic maintains its own
 accepted-value cache and source freshness, including the WeatherKit pixel and
-`forecast_days_2` age in diagnostics. Day 5 is not subscribed.
+`forecast_days_2` age in diagnostics. Day 5 (`weatherkitDay5`, 56 `days5*`
+outputs, same layout) is subscribed as `forecast_days_5`; its 56 destination
+feeds must already exist. The tracked-feed cap is 384 and the snapshot backlog 16.
 
 After uploading, expect `WeatherKit day2: parsed 56 valid feed samples`
 (fewer for absent provider fields) and

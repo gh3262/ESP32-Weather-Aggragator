@@ -364,7 +364,7 @@ int main() {
   assert(Serial.output.find("AIO ACK: id=") != std::string::npos);
 
   reset();
-  assert(subscribedTopics.size() == 12);
+  assert(subscribedTopics.size() == 13);
   assert(subscribedTopics[2] ==
          "test-user/integration/weather/test-location/current");
   assert(subscribedTopics[3] ==
@@ -385,6 +385,8 @@ int main() {
          "test-user/integration/weather/test-location/forecast_days_1");
   assert(subscribedTopics[11] ==
          "test-user/integration/weather/test-location/forecast_days_2");
+  assert(subscribedTopics[12] ==
+         "test-user/integration/weather/test-location/forecast_days_5");
   assert(enqueueGroup("current", samples, 2));
   tick(1999);
   assert(sent.empty());
@@ -443,7 +445,7 @@ int main() {
   tick(2001);
   event(MQTT_EVENT_CONNECTED);
   tick(4000);
-  assert(subscribedTopics.size() == 24);
+  assert(subscribedTopics.size() == 26);
   assert(sent.size() == 1 && outstandingMessageId == originalId);
   event(MQTT_EVENT_PUBLISHED, originalId);
   tick(4001);
@@ -517,7 +519,7 @@ int main() {
   rejectSubscription = true;
   subscriptionCalls = 0;
   event(MQTT_EVENT_CONNECTED);
-  assert(subscriptionCalls == 12);
+  assert(subscriptionCalls == 13);
   tick(1);
   assert(Serial.output.find("subscription failed") != std::string::npos);
   for (const auto& subscription : weatherSubscriptions) {
@@ -996,7 +998,7 @@ int main() {
   assert(rejectedGroups > 0);
   assert(weatherkit_current::discardedMessages() == 0);
   uint32_t nextPushAt = 60000;
-  for (size_t cycle = 0; cycle < 320 &&
+  for (size_t cycle = 0; cycle < 400 &&
        (!pending.empty() || !pendingLogs.empty() ||
         !weatherkit_current::waitingSamples.empty() ||
         !weatherkit_current::changes.empty()); ++cycle) {
@@ -1029,8 +1031,8 @@ int main() {
       ++feeds[publication.topic];
     }
   }
-  assert(dataPublishes == 243 && feeds.size() == 243);
-  assert(completionLogs == 10);
+  assert(dataPublishes == 299 && feeds.size() == 299);
+  assert(completionLogs == 11);
   for (const auto& feed : feeds) {
     assert(feed.second == 1);
   }

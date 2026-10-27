@@ -45,7 +45,7 @@ constexpr size_t kMaxFeedKeyLength = 64;
 constexpr size_t kMaxValueLength = 512;
 constexpr size_t kMaxGroupNameLength = 64;
 constexpr size_t kMaxLogEntries = 16;
-constexpr size_t kMaxTrackedFeeds = 256;
+constexpr size_t kMaxTrackedFeeds = 384;
 constexpr char kLogFeed[] = "aggregator.log";
 constexpr char kDiagnosticFeed[] = "aggregator.diag";
 constexpr size_t kMaxDiagnosticBytes = 1024;
@@ -128,6 +128,7 @@ WeatherSubscription weatherSubscriptions[] = {
     {"forecast_hours_24", weatherkit_current::Group::Hour24},
     {"forecast_days_1", weatherkit_current::Group::Day1},
     {"forecast_days_2", weatherkit_current::Group::Day2},
+    {"forecast_days_5", weatherkit_current::Group::Day5},
 };
 bool configured = false;
 bool clockSynchronized = false;
@@ -662,7 +663,7 @@ bool captureDiagnostic(const char* reason, bool wifiConnected, uint32_t now,
       summary, sizeof(summary),
       "%s %s up_s=%lld reset=%d\n"
       "mqtt=%s c/d/e=%lu/%lu/%lu outage_s current/last/max=%lu/%lu/%lu\n"
-      "ack=%lu timeout=%lu enq_fail=%lu group_reject=%lu "
+      "ack=%lu timeout=%lu enq_fail=%lu group_defer=%lu "
       "queue=%u log_wait=%u high=%u log_drop=%lu diag_coalesced=%lu\n"
       "inflight_id=%d age_s=%lu\n"
       "rate=%lu/%lu age_s=%s fail=%lu throttle=%lu pause_s=%lu\n"
@@ -783,7 +784,7 @@ void begin() {
       subscription.topic = std::string(AIO_USERNAME) + "/integration/weather/" +
                            AIO_WEATHER_LOCATION_ID + "/" + subscription.type;
     }
-    Serial.println("WeatherKit: current, m5, m30, hour1, hour2, hour6, hour12, hour24, day1, day2 enabled; first data waits for next MQTT push");
+    Serial.println("WeatherKit: current, m5, m30, hour1, hour2, hour6, hour12, hour24, day1, day2, day5 enabled; first data waits for next MQTT push");
   } else {
     Serial.println("WeatherKit: disabled; configure AIO_WEATHER_LOCATION_ID");
   }
@@ -1052,12 +1053,12 @@ bool enqueueGroup(const char* groupName, const FeedSample* samples,
   if (pending.size() + pendingLogs.size() + changed.size() + 1 >
       kMaxQueuedPublishes) {
     ++rejectedGroups;
-    Serial.println("AIO ERROR: publish queue is full; feed group rejected");
+    Serial.println("AIO ERROR: publish queue is full; feed group deferred for retry");
     return false;
   }
   if (publishedValues.size() + newFeeds.size() > kMaxTrackedFeeds) {
     ++rejectedGroups;
-    Serial.println("AIO ERROR: change cache is full; feed group rejected");
+    Serial.println("AIO ERROR: change cache is full; feed group deferred for retry");
     return false;
   }
   changed.back().isGroupEnd = true;

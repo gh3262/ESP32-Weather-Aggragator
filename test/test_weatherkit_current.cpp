@@ -593,7 +593,7 @@ int main() {
     }
     update(testMillis);
     assert(incoming.empty());
-    assert(changes.size() == kMaxPendingSnapshots - 1);
+    assert(changes.size() == sizeof(sources) / sizeof(sources[0]) - 1);
     assert(waitingSamples.size() == 1);
     assert(discardedMessages() == 0);
     assert(health(true, testMillis) == HealthStatus::Green);
@@ -650,23 +650,27 @@ int main() {
   }
   assert(changes.size() == kMaxPendingSnapshots);
   testMillis = 100;
-  deliver(R"({"temperature":11})");
+  const std::string cap = std::to_string(kMaxPendingSnapshots + 1);
+  char acceptedF[16], overflowF[16];
+  snprintf(acceptedF, sizeof(acceptedF), "%.1f", kMaxPendingSnapshots * 1.8 + 32);
+  snprintf(overflowF, sizeof(overflowF), "%.1f", (kMaxPendingSnapshots + 1) * 1.8 + 32);
+  deliver("{\"temperature\":" + cap + "}");
   update(100);
   assert(discardStatus().changeQueue == 1 && discardedMessages() == 1);
   assert(sourceStatus(Group::Current, 100).ageSeconds == 0);
-  assert(sources[0].acceptedValues.at("currenttemperature") == "50.0");
+  assert(sources[0].acceptedValues.at("currenttemperature") == acceptedF);
   assert(Serial.output.find("changed-snapshot backlog full") != std::string::npos);
   // Losing a new transition at capacity must not mark it accepted.
   acceptGroup = true;
   update(2000);
   update(2001);
-  deliver(R"({"temperature":11})");
+  deliver("{\"temperature\":" + cap + "}");
   update(2002);
-  assert(sources[0].acceptedValues.at("currenttemperature") == "51.8");
-  for (uint32_t now = 2003; now < 2013; ++now) {
+  assert(sources[0].acceptedValues.at("currenttemperature") == overflowF);
+  for (uint32_t now = 2003; now < 2003 + kMaxPendingSnapshots + 3; ++now) {
     update(now);
   }
-  assert(submitted.at("currenttemperature") == "51.8");
+  assert(submitted.at("currenttemperature") == overflowF);
   assert(changes.empty() && waitingSamples.empty());
   assert(discardStatus().rawQueue == 0 && discardStatus().assembly == 0);
   assert(discardStatus().invalid == 0);
