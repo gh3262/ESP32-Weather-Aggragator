@@ -68,10 +68,14 @@ The provider's documentation topic list omits `forecast_hours_12`, but the API
 explicitly supplies its MQTT path. Live hour-12 delivery was confirmed on
 hardware on 2026-10-24.
 The diagnostic currently subscribes to the other ten topics. The main firmware
-now subscribes to current, m5, m30, hours 1, 2, 6, 12, and 24, and days 1 and 2.
+now subscribes to all eleven groups: current, m5, m30, hours 1, 2, 6, 12, and 24,
+and days 1, 2, and 5 (299 outputs).
 Hour-24 main-firmware publishing was confirmed on hardware on 2026-10-24;
 day-1 publishing and changed-value cycles passed hardware soak testing.
-Day-2 publishing awaits board validation; day 5 remains disabled.
+Day-2 and day-5 publishing are enabled and were validated on hardware on
+2026-10-27/28, including a 20+ hour soak. Precipitation and snow amounts and
+intensities are published in inches (2 decimals); nonzero values were confirmed
+on hardware on 2026-10-28.
 
 The legacy hour-12 outputs are already inventoried under `f4.py` below and in
 the companion CSV; no additional destination rows are needed.

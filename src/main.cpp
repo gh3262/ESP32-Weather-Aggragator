@@ -225,7 +225,7 @@ void connectStrongestNetwork(uint32_t now, int16_t found) {
 
 bool connectCachedNetwork(uint32_t now) {
   const size_t strongest =
-      wifi_retry::selectStrongest(knownNetworks, WIFI_NETWORK_COUNT, now);
+      wifi_retry::selectPreferred(knownNetworks, WIFI_NETWORK_COUNT, now);
   if (strongest == WIFI_NETWORK_COUNT) {
     return false;
   }
@@ -319,6 +319,44 @@ void updateNetwork(uint32_t now) {
   } else if (networkState == NetworkState::Waiting &&
              now - stateStartedAt >= kRetryDelayMs) {
     startScan(now);
+  }
+}
+
+// Wi-Fi can report connected while DNS/TLS/MQTT never work. If AIO health stays
+// red while online, reconnect Wi-Fi once, then restart if it still fails.
+constexpr uint32_t kWatchdogReconnectMs = 5UL * 60UL * 1000UL;
+constexpr uint32_t kWatchdogRestartMs = 10UL * 60UL * 1000UL;
+uint32_t watchdogBadSince = 0;
+bool watchdogBad = false;
+bool watchdogReconnected = false;
+
+void runConnectivityWatchdog(uint32_t now) {
+  const bool bad = networkState == NetworkState::Online &&
+                   aio_publisher::health(now) == HealthStatus::Red;
+  if (!bad) {
+    watchdogBad = false;
+    if (networkState == NetworkState::Online) {
+      watchdogReconnected = false;
+    }
+    return;
+  }
+  if (!watchdogBad) {
+    watchdogBad = true;
+    watchdogBadSince = now;
+    return;
+  }
+  const uint32_t badFor = now - watchdogBadSince;
+  if (watchdogReconnected && badFor >= kWatchdogRestartMs) {
+    Serial.println("Watchdog: AIO still unreachable after Wi-Fi reconnect; restarting");
+    Serial.flush();
+    ESP.restart();
+  } else if (!watchdogReconnected && badFor >= kWatchdogReconnectMs) {
+    Serial.printf("Watchdog: AIO unreachable for %lu s while Wi-Fi is up; "
+                  "reconnecting Wi-Fi\n",
+                  static_cast<unsigned long>(badFor / 1000));
+    watchdogReconnected = true;
+    watchdogBad = false;
+    waitForRetry(now, "Connectivity watchdog");
   }
 }
 
@@ -485,7 +523,7 @@ void loop() {
   updateTime(now);
   aio_publisher::update(networkState == NetworkState::Online,
                         timeSynchronized, now);
-  handleSerialCommands();
+  runConnectivityWatchdog(now);
   updateStatusPixels(now);
   if (refreshNeeded || now - lastRefreshAt >= kRefreshMs) {
     drawStatus(now);

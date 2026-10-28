@@ -45,14 +45,14 @@ struct SavedNetwork {
   }
 };
 
-inline size_t selectStrongest(SavedNetwork* networks, size_t count, uint32_t now) {
-  size_t strongest = count;
+// Credential order is the priority: the first visible, eligible entry wins,
+// regardless of signal strength.
+inline size_t selectPreferred(SavedNetwork* networks, size_t count, uint32_t now) {
   for (size_t i = 0; i < count; ++i) {
-    if (networks[i].visible && networks[i].retry.eligible(now) &&
-        (strongest == count || networks[i].rssi > networks[strongest].rssi)) {
-      strongest = i;
+    if (networks[i].visible && networks[i].retry.eligible(now)) {
+      return i;
     }
   }
-  return strongest;
+  return count;
 }
 }  // namespace wifi_retry

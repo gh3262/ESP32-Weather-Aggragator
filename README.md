@@ -8,7 +8,9 @@ PlatformIO/Arduino firmware for a Seeed Studio XIAO ESP32-S3 with an Adafruit
 - Landscape 320x172 status page with an RGB test strip.
 - Wi-Fi connection status, SSID, IP address, signal strength, uptime, and free heap.
 - Multiple saved networks using the same credentials format as CYD-Weather.
-  Asynchronous scans rank saved SSIDs by their strongest visible signal.
+  Asynchronous scans find which saved SSIDs are visible; the first visible,
+  eligible entry in credential order is chosen (list order is priority, not
+  signal strength, since a very strong signal can be less reliable).
   Connections use plain `WiFi.begin(ssid, password)` without channel or BSSID
   binding, allowing the driver to choose a satellite/access point.
   Scans wait non-blockingly for completion events with a 20-second deadline,
@@ -19,8 +21,11 @@ PlatformIO/Arduino firmware for a Seeed Studio XIAO ESP32-S3 with an Adafruit
   updating while scanning and waiting for Wi-Fi. Hidden networks are not supported.
   The firmware does not roam away from a working connection.
   After two failed 20-second connection attempts to a saved network, that entry
-  is skipped for 10 minutes and the strongest remaining eligible saved network
+  is skipped for 10 minutes and the next remaining eligible saved network
   is selected. Failures reset on successful connection or cooldown expiry.
+  A connectivity watchdog covers Wi-Fi that is connected but unusable: if Adafruit IO
+  health stays red for 5 minutes while online, Wi-Fi is disconnected and rescanned;
+  if it stays red for 10 more minutes afterwards, the board restarts. Failures reset on successful connection or cooldown expiry.
   If none is eligible, discovery continues every 15 seconds until one is.
   Successful scans refresh cached signal information and visibility, combining
   satellites with the same SSID into one saved-network candidate.
@@ -52,10 +57,27 @@ PlatformIO/Arduino firmware for a Seeed Studio XIAO ESP32-S3 with an Adafruit
   pixel initialization and updates during Wi-Fi diagnostics.
 
 The main firmware receives WeatherKit current conditions, 5-/30-minute
-forecasts, hour-1/hour-2/hour-6/hour-12/hour-24 forecasts, and day-1/day-2 forecasts
+forecasts, hour-1/hour-2/hour-6/hour-12/hour-24 forecasts, and day-1/day-2/day-5 forecasts
 through Adafruit IO MQTT and publishes changed values through the shared paced
-queue. Other providers and day-5 forecasts are not implemented yet.
+queue. All 11 WeatherKit source groups are implemented, with 299 configured
+outputs. Other providers are not implemented yet.
 [The feed catalog](WEATHER_FEED_CATALOG.csv) remains the migration reference.
+
+WeatherKit validation status (2026-10-28):
+
+- The clean day-5 baseline ran for approximately 20 hours 48 minutes with one
+  MQTT connection, no disconnects, no publish timeouts or throttling, and no
+  WeatherKit discards. No new duplicate bursts were reported by the external
+  monitor. Queues drained after group-admission deferrals.
+- The owner confirmed the previous WeatherKit feeder is shut down; this
+  aggregator is the sole intended publisher for these destination feeds.
+- Precipitation and snowfall conversions to inches/inches per hour with two
+  decimal places are implemented and build/host-test validated. Deployment and
+  on-board validation are pending: record the unit cutover time, verify a full
+  startup and a nonzero converted value, then review the 30-minute diagnostic.
+  Existing AIO history remains in its original units.
+- The earlier failed-start connectivity/repeated-delivery episode remains
+  unresolved; the clean baseline does not establish its cause or a fix.
 
 ### Adafruit IO publishing foundation
 
@@ -567,7 +589,8 @@ After uploading the main environment, wait for the next MQTT push and look for
 Verify the six existing minute feeds and both completion logs. A startup burst
 of all 26 current/minute values needs roughly 52 seconds, plus logs, to drain;
 arrival order determines which group publishes first. With hours 1, 2, 6, 12, and 24
-and days 1 and 2 also enabled, the startup burst is 243 values, roughly 486 seconds plus logs. This exceeds the
+and days 1, 2, and 5 also enabled, the startup burst is 299 values, roughly
+598 seconds plus logs. This exceeds the
 64-entry publish queue; the adapter retains and retries groups as space opens,
 without increasing the publish rate. Subsequent updates are
 change-driven, not forced every five or thirty minutes. Do not run another
@@ -605,7 +628,7 @@ Unchanged pushes create no publishes or completion logs.
 `weatherkitHour2`, following the legacy [hour-2 handler](circuitpython/Apple_Weatherkit/f2.py).
 Fields, conversions, validation, FIFO retries, and change detection match hour 1.
 Visibility is whole miles, correcting the legacy handler's raw-meter output.
-Days 1 and 2 are enabled; day 5 remains disabled.
+Days 1, 2, and 5 are enabled.
 
 After uploading, expect `WeatherKit hour2: parsed 21 valid feed samples` when all
 fields are present, updates to the existing `hours2*` feeds, and
@@ -678,7 +701,7 @@ two decimal places. UV index remains raw;
 moon phase and celestial/forecast timestamps remain provider text. Missing/null
 moonrise or moonset may be legitimate and are skipped, never fabricated as `"0"`.
 Absent or invalid nested objects do not prevent valid root/other-period values
-from publishing. Day 2 is independently enabled; day 5 remains disabled.
+from publishing. Days 2 and 5 are independently enabled.
 Daily adapters are not chained together.
 
 The entire day-1 payload is one source group, not three independent MQTT topics.
@@ -692,7 +715,7 @@ After uploading, look for `WeatherKit day1: parsed 56 valid feed samples`
 (fewer if provider fields are absent), updates to the three day-1 feed sets, and
 `Sent feed group WeatherKit day1 - Number Updated: 56` on a complete initial
 payload. Repeated unchanged pushes do not consume backlog space. The complete
-243-output startup burst across ten groups takes about nine minutes plus
+299-output startup burst across eleven groups takes about eleven minutes plus
 source arrival time and any connection delays. Publish queue-full retries are
 expected while the large group waits; receive-discard counters should remain zero.
 
@@ -714,8 +737,8 @@ After uploading, expect `WeatherKit day2: parsed 56 valid feed samples`
 `Sent feed group WeatherKit day2 - Number Updated: 56` on a complete initial
 payload. Subsequent completion counts include changed values only. Feed
 creation remains external; all 56 existing destination feeds must be available.
-Allow about nine minutes plus source-arrival time, throttling, and connection
-delays for the complete startup across ten groups. Both daily groups may wait
+Allow about eleven minutes plus source-arrival time, throttling, and connection
+delays for the complete startup across eleven groups. All three daily groups may wait
 for near-empty queue capacity; queue-full retained retries are expected.
 The shared two-second pacing and account-rate cooldown policy are unchanged.
 Watch remaining account headroom and receive-discard counters during this
@@ -751,6 +774,16 @@ days are tracked independently. A future heartbeat can republish unchanged
 values periodically so dashboards do not remain stale indefinitely. The
 current implementation deliberately uses an in-memory cache and no heartbeat;
 the freshness policy will be chosen alongside provider integration.
+
+Planned improvement: persistent acknowledged-value caching for warm starts.
+Evaluate internal flash versus the display's SD socket, with checkpoints roughly
+twice an hour to reduce unchanged-feed publishing after short reboots. Persist
+only broker-acknowledged weather values, and coordinate provider/publisher cache
+restoration without treating restored values as fresh provider reception.
+Use versioned, integrity-checked, power-loss-safe snapshots compatible with the
+account, destination mappings, and conversion rules. Report invalid/unavailable
+snapshots and fall back to normal full publishing; provide a forced full-refresh
+option. This is deferred: no persistence or hardware changes are enabled yet.
 
 Fetch timing still matters for freshness, and queue pacing still matters when
 many values change together (such as at startup or when a forecast updates).
