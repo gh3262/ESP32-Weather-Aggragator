@@ -613,8 +613,12 @@ the existing pacing and change detection. This migration intentionally does
 not read pressure history or derive `owpresstrend`/`owptval`. Check the
 OpenWeather status pixel (shared with WeatherKit), serial request/parse logs,
 and `aggregator.log` for successful groups after upload.
-Host tests and the firmware build pass; board/API-key operation remains
-unvalidated because this change was not uploaded.
+Host tests and the firmware build pass. On 2026-10-28, the owner reported
+successful board/API-key operation and verified startup rain publication:
+after manually adding nonzero values to the OpenWeather rain feed and
+restarting the updated firmware, a zero value appeared in the online feed.
+This confirms the startup correction; a rain-to-dry transition without a
+restart has not yet been verified on the board.
 
 ### WeatherKit minute forecasts (m5 and m30)
 
