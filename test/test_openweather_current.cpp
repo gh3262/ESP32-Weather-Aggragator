@@ -196,6 +196,28 @@ int main() {
   assert(accepted.count("openweather.owrain") == 1);
   assert(accepted.at("openweather.owrain") == "0.00");
 
+  const char* rainBodies[] = {
+      R"JSON({"main":{"temp":1}})JSON",
+      R"JSON({"rain":{}})JSON",
+      R"JSON({"rain":{"1h":-1}})JSON",
+      R"JSON({"rain":{"1h":"2"}})JSON",
+      R"JSON({"rain":5})JSON",
+      R"JSON({"rain":null})JSON",
+  };
+  const bool rainExpected[] = {true, true, false, false, false, false};
+  for (size_t i = 0; i < sizeof(rainBodies) / sizeof(rainBodies[0]); ++i) {
+    accepted.clear();
+    testHttpBody = rainBodies[i];
+    const uint32_t at = static_cast<uint32_t>(3 + i) * kPollIntervalMs;
+    update(true, true, at);
+    testTask(nullptr);
+    update(true, true, at + 1);
+    assert(accepted.count("openweather.owrain") == (rainExpected[i] ? 1u : 0u));
+    if (rainExpected[i]) {
+      assert(accepted.at("openweather.owrain") == "0.00");
+    }
+  }
+
   reset();
   begin();
   update(true, true, 0);

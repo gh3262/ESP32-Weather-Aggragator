@@ -605,7 +605,9 @@ Condition text, description, ID, icon, and city/country are retained.
 
 Null, absent, malformed, or out-of-range fields are skipped rather than
 replaced with zero; valid zeroes are published. A skipped field does not erase
-the last AIO value. If the bounded AIO queue rejects a snapshot, the complete
+the last AIO value. Rain is the exception: OpenWeather omits weather phenomena
+that did not occur, so an absent `rain` object or `rain.1h` publishes `0.00`
+(an explicit null or malformed/negative rain is still skipped). If the bounded AIO queue rejects a snapshot, the complete
 snapshot remains in RAM and is retried until accepted; the publisher performs
 the existing pacing and change detection. This migration intentionally does
 not read pressure history or derive `owpresstrend`/`owptval`. Check the
@@ -840,13 +842,6 @@ Use versioned, integrity-checked, power-loss-safe snapshots compatible with the
 account, destination mappings, and conversion rules. Report invalid/unavailable
 snapshots and fall back to normal full publishing; provide a forced full-refresh
 option. This is deferred: no persistence or hardware changes are enabled yet.
-
-To do: publish zero for missing OpenWeather rain. OpenWeather omits weather
-phenomenon fields such as `rain.1h` when they did not occur, but the adapter
-currently skips an absent `rain.1h`, so `openweather.owrain` can retain an old
-nonzero value after rain stops. In an otherwise valid response, treat an absent
-`rain` object or `rain.1h` as `0.00`; continue skipping null, malformed, or
-negative values. Add host tests for absent, zero, and malformed rain.
 
 Long-term project, after all legacy feeds are migrated: evaluate the free
 OpenWeather [5 day / 3 hour forecast](https://openweathermap.org/api/forecast5)

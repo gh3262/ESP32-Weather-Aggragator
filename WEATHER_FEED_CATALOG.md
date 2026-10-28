@@ -430,7 +430,9 @@ The main firmware now polls the same `/data/2.5/weather` endpoint about every
 publisher and retains the shared `rt=OpenWeather` status. It deliberately omits
 `owpresstrend` and `owptval`; no AIO history request or trend derivation is made.
 Missing, null, invalid, and out-of-range values are skipped instead of being
-defaulted to zero, preserving any prior AIO value. The HTTPS request runs in a
+defaulted to zero, preserving any prior AIO value. The exception is absent
+rain, which publishes `0.00` because OpenWeather omits phenomena that did not
+occur. The HTTPS request runs in a
 bounded-timeout worker task. Provider timestamps use the API timezone offset.
 
 The table below records the migrated outputs and their current representation;
@@ -453,7 +455,7 @@ the listed trend feeds remain legacy-only.
 | `wind.deg` | `owwinddirection` | Shared 16-point compass helper |
 | `wind.speed` | `owwindspeed` | m/s to whole mph, truncated |
 | `wind.gust` | `owwindgust` | m/s to whole mph, truncated |
-| `rain["1h"]` | `owrain` | mm to inches, two decimals |
+| `rain["1h"]` | `owrain` | mm to inches, two decimals; absent rain publishes `0.00` |
 | `main.humidity` | `owhumidity` | Percent |
 | `sys.sunrise` and `timezone` | `owsunrise` | Local `HH:MM` |
 | `sys.sunset` and `timezone` | `owsunset` | Local `HH:MM` |

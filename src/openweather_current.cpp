@@ -287,6 +287,31 @@ void addTimestamp(std::vector<Sample>& samples, JsonVariantConst timestamp,
   samples.push_back({key, formatted});
 }
 
+bool hasKey(JsonObjectConst object, const char* key) {
+  for (JsonPairConst pair : object) {
+    if (strcmp(pair.key().c_str(), key) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// OpenWeather omits phenomena that did not occur, so absent rain means none.
+// Explicit nulls and malformed values are still skipped.
+void addRain(std::vector<Sample>& samples, JsonObjectConst root) {
+  const char* key = "openweather.owrain";
+  if (!hasKey(root, "rain")) {
+    samples.push_back({key, "0.00"});
+    return;
+  }
+  const JsonVariantConst rain = root["rain"];
+  if (rain.is<JsonObjectConst>() && !hasKey(rain.as<JsonObjectConst>(), "1h")) {
+    samples.push_back({key, "0.00"});
+    return;
+  }
+  addNumeric(samples, rain["1h"], key, inches);
+}
+
 bool parseResponse(const std::string& body, std::vector<Sample>& samples) {
   JsonDocument document;
   const DeserializationError error = deserializeJson(
@@ -320,7 +345,7 @@ bool parseResponse(const std::string& body, std::vector<Sample>& samples) {
   addNumeric(samples, root["main"]["temp_min"], "openweather.owmintemp", fahrenheit);
   addNumeric(samples, root["wind"]["speed"], "openweather.owwindspeed", mph);
   addNumeric(samples, root["wind"]["gust"], "openweather.owwindgust", mph);
-  addNumeric(samples, root["rain"]["1h"], "openweather.owrain", inches);
+  addRain(samples, root);
   addNumeric(samples, root["main"]["humidity"], "openweather.owhumidity", percent);
 
   const JsonVariantConst direction = root["wind"]["deg"];
