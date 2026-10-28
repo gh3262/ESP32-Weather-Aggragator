@@ -9,6 +9,7 @@
 #include <atomic>
 #include "status_pixels.h"
 #include "aio_publisher.h"
+#include "openweather_current.h"
 #include "wifi_retry.h"
 
 #if __has_include("credentials.h")
@@ -82,8 +83,17 @@ void updateStatusPixels(uint32_t now) {
     default:
       break;
   }
+  HealthStatus weatherHealth = aio_publisher::weatherHealth(now);
+  const HealthStatus openWeatherHealth = openweather_current::health(now);
+  if (openWeatherHealth == HealthStatus::Red ||
+      (openWeatherHealth == HealthStatus::Amber &&
+       weatherHealth != HealthStatus::Red) ||
+      (weatherHealth == HealthStatus::Off &&
+       openWeatherHealth != HealthStatus::Off)) {
+    weatherHealth = openWeatherHealth;
+  }
   const HealthStatus states[] = {
-      wifiHealth, aio_publisher::health(now), aio_publisher::weatherHealth(now)};
+      wifiHealth, aio_publisher::health(now), weatherHealth};
   static bool initialized[3] = {};
   static HealthStatus previous[3] = {};
   for (uint16_t index = 0; index < 3; ++index) {
@@ -471,6 +481,7 @@ void setup() {
   Serial.println("\nWeather aggregator: hardware and Wi-Fi bring-up");
   Serial.println("Send t for the publisher test to aggregator.diag, ? for help.");
   aio_publisher::begin();
+  openweather_current::begin();
   if (kEnableStatusPixels) {
     pixelsReady = status_pixels::begin();
   } else {
@@ -523,6 +534,8 @@ void loop() {
   updateTime(now);
   aio_publisher::update(networkState == NetworkState::Online,
                         timeSynchronized, now);
+  openweather_current::update(networkState == NetworkState::Online,
+                              timeSynchronized, now);
   runConnectivityWatchdog(now);
   updateStatusPixels(now);
   if (refreshNeeded || now - lastRefreshAt >= kRefreshMs) {

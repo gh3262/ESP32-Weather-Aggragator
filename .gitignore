@@ -8,3 +8,6 @@ include/credentials.h
 settings.toml
 secrets.py
 /logs/
+/aio-all_feeds/lib/
+/aio-all_feeds/fonts/
+/aio-all_feeds/settings.toml

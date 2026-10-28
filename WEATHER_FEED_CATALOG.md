@@ -1,6 +1,6 @@
 # CircuitPython weather feed catalog
 
-Reviewed: 2026-10-19.
+Reviewed: 2026-10-28.
 
 ## Scope and how to use this catalog
 
@@ -8,8 +8,9 @@ Sections 1-10 inventory the supplied source, rather than measuring running board
 They cover all eight project folders under [circuitpython](circuitpython/),
 including the WeatherKit helper and chained handlers. Section 11 adds observed
 status-message history from the supplied Adafruit IO `rt` CSV export.
-No firmware was changed, no PlatformIO/Arduino tooling was installed, and no live
-API requests or feed writes were made.
+The source inventory remains a record of the legacy CircuitPython code; section 4
+also records the OpenWeather ESP32 migration. No authenticated API requests or
+feed writes were made as part of this catalog update.
 
 The companion [CSV catalog](WEATHER_FEED_CATALOG.csv) lists every destination
 explicitly, with its incoming source/field, transformation, script, and estimated
@@ -418,45 +419,58 @@ does not have a dedicated daily forecast output.
 ## 4. OpenWeather
 
 Source: [Open_Weather/code.py](circuitpython/Open_Weather/code.py).
-One metric current-weather GET and a read of the latest **six**
-`openweather.owpressure` samples occur per cycle. The history read happens before
-the new pressure value is sent.
+The legacy CircuitPython script made one metric current-weather GET and read the
+latest **six** `openweather.owpressure` samples before sending new pressure.
 
-All destinations below are prefixed `openweather.` and update once per cycle.
+### ESP32 migration
+
+The main firmware now polls the same `/data/2.5/weather` endpoint about every
+30 minutes using configured coordinates and a local API key. It publishes the
+21 weather outputs in the table through the shared paced/change-detecting
+publisher and retains the shared `rt=OpenWeather` status. It deliberately omits
+`owpresstrend` and `owptval`; no AIO history request or trend derivation is made.
+Missing, null, invalid, and out-of-range values are skipped instead of being
+defaulted to zero, preserving any prior AIO value. The HTTPS request runs in a
+bounded-timeout worker task. Provider timestamps use the API timezone offset.
+
+The table below records the migrated outputs and their current representation;
+the listed trend feeds remain legacy-only.
 
 | Incoming field / derivation | Destination suffix | Representation |
 |---|---|---|
-| `weather[0].main` | `owmaintext` | Condition text |
-| `weather[0].description` | `owdescription` | Description |
+| `weather[0].main` | `owmaintext` | Raw condition text |
+| `weather[0].description` | `owdescription` | Raw condition description |
 | `weather[0].id` | `owweatherid` | Numeric weather code |
 | `weather[0].icon` | `owicon` | Icon identifier |
 | `visibility` | `owvisibility` | Meters to whole miles, truncated |
 | `dt` and `timezone` | `owasof` | Local `YYYY-MM-DD HH:MM` |
 | `clouds.all` | `owclouds` | Percent |
 | `main.pressure` | `owpressure` | hPa |
-| `main.temp` | `owtemp` | Celsius to Fahrenheit |
-| `main.feels_like` | `owfeelslike` | Fahrenheit |
-| `main.temp_max` | `owmaxtemp` | Fahrenheit; not a daily forecast high |
-| `main.temp_min` | `owmintemp` | Fahrenheit; not a daily forecast low |
-| `wind.deg` | `owwinddirection` | Compass text using `windir2()` thresholds |
+| `main.temp` | `owtemp` | Celsius to Fahrenheit, one decimal |
+| `main.feels_like` | `owfeelslike` | Celsius to Fahrenheit, one decimal |
+| `main.temp_max` | `owmaxtemp` | Celsius to Fahrenheit, one decimal; not a daily high |
+| `main.temp_min` | `owmintemp` | Celsius to Fahrenheit, one decimal; not a daily low |
+| `wind.deg` | `owwinddirection` | Shared 16-point compass helper |
 | `wind.speed` | `owwindspeed` | m/s to whole mph, truncated |
 | `wind.gust` | `owwindgust` | m/s to whole mph, truncated |
-| `rain["1h"]` | `owrain` | Raw mm; defaults to 0 if absent |
+| `rain["1h"]` | `owrain` | mm to inches, two decimals |
 | `main.humidity` | `owhumidity` | Percent |
 | `sys.sunrise` and `timezone` | `owsunrise` | Local `HH:MM` |
 | `sys.sunset` and `timezone` | `owsunset` | Local `HH:MM` |
 | `name` and `sys.country` | `owcity` | City, country |
 | `timezone / 3600` | `owtimezone` | Offset hours |
-| Current pressure versus mean of six historical samples | `owpresstrend` | `Rising`, `Falling`, `Steady` |
-| Same trend | `owptval` | 1, -1, 0 respectively |
+| Current pressure versus mean of six historical samples | `owpresstrend` | Not migrated; no history query |
+| Same trend | `owptval` | Not migrated; no history query |
 
 Shared `rt` receives `OpenWeather`.
 Sea-level/ground-level pressure and coordinates are read but do not have
-separate weather outputs. Missing max/min temperature defaults to 0 Celsius
-before conversion, and missing gust defaults to zero.
+separate weather outputs in the legacy source. The old script defaulted missing
+max/min temperature to 0 Celsius and missing gust to zero; the ESP32 migration
+instead skips those missing values.
 
-Timing: each of 30 idle rounds contains two 4.5-second LED cycles, a 20-second
-display rotation, and a 30-second sleep: **1,770 seconds** total.
+Legacy CircuitPython timing: each of 30 idle rounds contains two 4.5-second
+LED cycles, a 20-second display rotation, and a 30-second sleep: **1,770
+seconds** total.
 Five `slow()` pauses add 40 seconds, and the post-fetch pause adds 2 seconds.
 Minimum normal explicit wait is therefore **1,812 seconds (30 min 12 s)**.
 Error animations and retries can substantially increase it.

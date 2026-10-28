@@ -51,17 +51,21 @@ PlatformIO/Arduino firmware for a Seeed Studio XIAO ESP32-S3 with an Adafruit
 - Eight-pixel RGB NeoPixel ring on D0 (GPIO1), using pixel 0 for network
   status: amber while scanning/connecting, green when connected, and red when
   unconfigured, initialization fails, or waiting to reconnect. Two additional
-  pixels show AIO publishing health (1) and WeatherKit reception health (2);
-  pixels 3-7 remain off. Brightness is limited to 16 out of 255 in software.
+  pixels show AIO publishing health (1) and weather-source health (2; WeatherKit
+  and OpenWeather); pixels 3-7 remain off. Brightness is limited to 16 out of
+  255 in software.
   Enabled using `kEnableStatusPixels = true`; set it to `false` to isolate
   pixel initialization and updates during Wi-Fi diagnostics.
 
 The main firmware receives WeatherKit current conditions, 5-/30-minute
 forecasts, hour-1/hour-2/hour-6/hour-12/hour-24 forecasts, and day-1/day-2/day-5 forecasts
-through Adafruit IO MQTT and publishes changed values through the shared paced
-queue. All 11 WeatherKit source groups are implemented, with 299 configured
-outputs. Other providers are not implemented yet.
-[The feed catalog](WEATHER_FEED_CATALOG.csv) remains the migration reference.
+through Adafruit IO MQTT, and polls OpenWeather current conditions directly over
+verified HTTPS. Changed values from both providers use the shared paced queue.
+All 11 WeatherKit source groups are implemented, with 299 configured outputs;
+OpenWeather current conditions adds 21 weather outputs and the shared `rt`
+status. Other providers are not implemented yet.
+[The feed catalog](WEATHER_FEED_CATALOG.md) is the migration reference; its
+[CSV companion](WEATHER_FEED_CATALOG.csv) inventories the legacy source outputs.
 
 WeatherKit validation status (2026-10-28):
 
@@ -172,6 +176,29 @@ The prefix uses the
 NTP-synchronized clock and configured timezone/DST rules when the event enters
 the log queue, not when it is eventually published. Events before synchronization
 use `TIME_UNSYNCED` instead. Detailed serial messages are unchanged.
+
+### Pico 2 W all-feed monitor recovery
+
+[aio-all_feed/code.py](aio-all_feed/code.py) is the display-equipped all-feed
+monitor that publishes 15-minute summaries to `aggregator.weather-log`. Its
+six GP28 NeoPixels and display setup are unchanged.
+
+- After hardware initialization, an 8-second hardware watchdog resets the board
+  if foreground work hangs or crashes. This is the Pico port's maximum timeout;
+  even a legitimate network operation lasting longer can trigger a reset.
+- HTTP GET/POST socket timeouts are 3 seconds. MQTT uses a 1-second socket timeout,
+  a 3-second receive timeout, and one connection attempt per retry. Socket
+  timeouts are not total-operation deadlines; the hardware watchdog covers hangs.
+- Wi-Fi is reconnected before MQTT when needed. Five minutes without incoming
+  canonical feed messages, or five minutes of unsuccessful pending-summary
+  uploads, triggers a reset even if the display/heartbeat is still running.
+- Reset reasons and recovery actions are printed to serial. Unsent summaries
+  and in-progress feed counts are RAM-only and are lost on reset.
+
+Copy this folder's `code.py` to this Pico's `CIRCUITPY` drive, keeping its existing
+libraries, fonts, and settings. No wrapper or `monitor.py` is needed for this
+board. The watchdog is enabled after setup, so hangs during initial hardware,
+Wi-Fi, or time initialization are not covered. Hardware validation is pending.
 
 ### Independent CircuitPython account monitor
 
@@ -558,6 +585,35 @@ feeds. A full initial group of 20 feeds needs roughly 40 seconds to drain,
 plus queued logs. Subsequent unchanged pushes should show
 `feed group WeatherKit current unchanged; nothing queued`.
 
+### OpenWeather current conditions
+
+The main firmware requests OpenWeather `/data/2.5/weather` with `units=metric`
+using `OPENWEATHER_KEY`, `LATITUDE`, and `LONGITUDE` from the ignored local
+`include/credentials.h`. Requests start about every 30 minutes once Wi-Fi and
+NTP are ready. HTTPS uses a trusted root CA, a hostname-verified URL, bounded
+connect/read/handshake timeouts, and a worker task so network waits do not stall
+the main loop. Failed requests retry after 60 seconds. The API key is never
+printed.
+
+The adapter preserves the existing `openweather.*` feed keys for the 21 current
+weather outputs and publishes `rt=OpenWeather` with the shared publisher. It
+converts Celsius to Fahrenheit (one decimal), wind m/s to whole truncated mph,
+visibility meters to whole truncated miles, rain mm to inches (two decimals),
+and wind bearing through the shared compass helper. Observation, sunrise, and
+sunset timestamps use the API's timezone offset; timezone is reported in hours.
+Condition text, description, ID, icon, and city/country are retained.
+
+Null, absent, malformed, or out-of-range fields are skipped rather than
+replaced with zero; valid zeroes are published. A skipped field does not erase
+the last AIO value. If the bounded AIO queue rejects a snapshot, the complete
+snapshot remains in RAM and is retried until accepted; the publisher performs
+the existing pacing and change detection. This migration intentionally does
+not read pressure history or derive `owpresstrend`/`owptval`. Check the
+OpenWeather status pixel (shared with WeatherKit), serial request/parse logs,
+and `aggregator.log` for successful groups after upload.
+Host tests and the firmware build pass; board/API-key operation remains
+unvalidated because this change was not uploaded.
+
 ### WeatherKit minute forecasts (m5 and m30)
 
 The same MQTT connection subscribes to `forecast_minutes_5` and
@@ -784,6 +840,21 @@ Use versioned, integrity-checked, power-loss-safe snapshots compatible with the
 account, destination mappings, and conversion rules. Report invalid/unavailable
 snapshots and fall back to normal full publishing; provide a forced full-refresh
 option. This is deferred: no persistence or hardware changes are enabled yet.
+
+To do: publish zero for missing OpenWeather rain. OpenWeather omits weather
+phenomenon fields such as `rain.1h` when they did not occur, but the adapter
+currently skips an absent `rain.1h`, so `openweather.owrain` can retain an old
+nonzero value after rain stops. In an otherwise valid response, treat an absent
+`rain` object or `rain.1h` as `0.00`; continue skipping null, malformed, or
+negative values. Add host tests for absent, zero, and malformed rain.
+
+Long-term project, after all legacy feeds are migrated: evaluate the free
+OpenWeather [5 day / 3 hour forecast](https://openweathermap.org/api/forecast5)
+endpoint (`/data/2.5/forecast`). It provides 3-hour steps with precipitation
+probability (`pop`) and `rain.3h`/`snow.3h` volumes. It has no hourly or daily
+summaries, so daily highs/lows require local aggregation, and precipitation
+values must retain their 3-hour meaning. Define new feeds, response-size and
+memory limits, and publishing load before implementing it.
 
 Fetch timing still matters for freshness, and queue pacing still matters when
 many values change together (such as at startup or when a forecast updates).
@@ -1090,6 +1161,19 @@ publish-queue retries across timer wraparound. Publisher tests additionally
 exercise chunked MQTT events through the real adapter, change filter, paced
 publishes, completion logging, and suppression of a repeated source snapshot.
 
+[OpenWeather tests](test/test_openweather_current.cpp) use a dedicated fake
+HTTPS client and dummy configuration, never the network or local credentials:
+
+```powershell
+& "$env:USERPROFILE\.platformio\penv\Scripts\python.exe" -m ziglang c++ -std=c++11 -Wall -Wextra -Werror -pedantic -Itest\openweather_support -Itest\support -Iinclude "-I.pio\libdeps\seeed_xiao_esp32s3\ArduinoJson\src" test\test_openweather_current.cpp -o .pio\host-tests\openweather_current.exe
+if ($LASTEXITCODE -eq 0) { & .\.pio\host-tests\openweather_current.exe }
+```
+
+They verify all 21 feed mappings, unit conversions, valid zeroes, missing and
+invalid fields, API-offset timestamps, worker scheduling and retry timing,
+timer wraparound, and retained snapshots after queue deferral. They do not
+validate live API credentials, network behavior, or hardware TLS.
+
 ## Wiring
 
 These are the EYESPI BFF's default connections, matching the supplied
@@ -1129,7 +1213,9 @@ is upside down, change `setRotation(3)` to `setRotation(1)`.
    `VISUAL_CROSSING_KEY`, `WWO_KEY` (World Weather Online), and
    `EXCHANGE_RATE_KEY`. Historical settings names `openweather_token` and
    `WEATHER_API_KEY` duplicate `OPENWEATHER_KEY` and `WEATHERAPI_KEY`,
-   respectively; use the canonical names in this header.
+   respectively; use the canonical names in this header. OpenWeather also
+   uses the decimal-degree `LATITUDE` and `LONGITUDE` values for its current
+   weather request.
 3. Run `pio run` or use PlatformIO's Build action.
 4. Upload using PlatformIO's Upload action or `pio run --target upload`.
 5. Open the serial monitor with `pio device monitor --baud 115200`.
