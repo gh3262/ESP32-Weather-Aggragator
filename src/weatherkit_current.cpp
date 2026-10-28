@@ -171,6 +171,12 @@ bool convert(JsonVariantConst input, const Mapping& mapping, std::string& output
     case Conversion::Mph:
       result = weather::kilometersPerHourToMph(value);
       break;
+    case Conversion::Inches:
+      result = weather::millimetersToInches(value);
+      if (result.ok()) {
+        result = weather::roundToDecimals(result.value, 2);
+      }
+      break;
     case Conversion::Bearing:
       if (!weather::degreesToCompass(value).ok()) {
         return false;
@@ -202,6 +208,8 @@ bool convert(JsonVariantConst input, const Mapping& mapping, std::string& output
   int length;
   if (mapping.conversion == Conversion::Temperature) {
     length = snprintf(formatted, sizeof(formatted), "%.1f", result.value);
+  } else if (mapping.conversion == Conversion::Inches) {
+    length = snprintf(formatted, sizeof(formatted), "%.2f", result.value);
   } else if (wholeUnits) {
     length = snprintf(formatted, sizeof(formatted), "%.0f", std::trunc(result.value));
   } else {

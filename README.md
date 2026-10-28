@@ -468,12 +468,24 @@ their mappings. The firmware does not provision or delete feeds. Disabling or
 renaming an output leaves existing Adafruit IO feeds and their history intact.
 Changing mappings does not enable other source topics or add a provider.
 
+`Conversion::Inches` in [feed_config.h](include/feed_config.h) uses
+`weather::millimetersToInches` and rounds to two decimal places. All 41
+WeatherKit precipitation/snow amount and intensity mappings use this conversion,
+including nested daytime and overnight amounts. For example, 25.4 mm becomes
+`1.00` inches and 0.25 mm/h becomes `0.01` inches/h; very light precipitation
+can round to `0.00`. Negative and invalid inputs are still skipped and reported.
+These units take effect only after uploading firmware containing the change;
+building alone does not affect a running board. Existing feed history is not
+converted. Update destination feed unit labels and consumers at deployment,
+and record the cutover time to distinguish old mm values from new inch values.
+
 [weatherkit_current.cpp](src/weatherkit_current.cpp) maps the 20 existing
 `current*` destination feeds listed in the
 [catalog](WEATHER_FEED_CATALOG.md#22-current-and-minute-mappings).
 It preserves percent and whole-mile/mph truncation, Fahrenheit temperatures
 with one decimal, compass labels, `Its light`/`Its dark`, and raw pressure
-(hPa), precipitation intensity (mm/h), UV index, condition/trend, and `asOf`.
+(hPa), UV index, condition/trend, and `asOf`. Precipitation intensity converts
+from mm/h to inches/h with two decimal places.
 Wind input is km/h, not m/s. Shared precise conversion factors replace the old
 approximate multipliers; exact unit boundaries can therefore differ from the
 old implementation. Temperatures use the shared round-half-away-from-zero
@@ -538,7 +550,7 @@ as current conditions. Failed subscription enqueues retry independently every
 | --- | --- | --- | --- |
 | `startTime` | `m5starttime` | `m30starttime` | Timestamp text |
 | `precipitationChance` | `m5precipitationchance` | `m30precipitationchance` | Fraction to whole percent, truncated |
-| `precipitationIntensity` | `m5precipitationintensity` | `m30precipitationintensity` | Raw nonnegative mm/h |
+| `precipitationIntensity` | `m5precipitationintensity` | `m30precipitationintensity` | Nonnegative mm/h to inches/h, two decimals |
 
 Missing/invalid fields are reported on serial and skipped; valid zero values
 are published. Timestamp changes count as changes even when precipitation is
@@ -575,8 +587,9 @@ decimal; wind speeds become whole mph; wind direction becomes compass text.
 Forecast daylight uses `It will be light` / `It will be dark`, unlike the
 current-condition wording. Visibility becomes whole miles, matching current
 conditions and correcting the legacy hour-1 handler's missing conversion.
-Pressure (hPa), precipitation/snow amounts (mm), intensities (mm/h), UV,
-condition, and trend retain their provider representations.
+Precipitation/snow amounts convert from mm to inches, and intensities from
+mm/h to inches/h, with two decimal places. Pressure (hPa), UV, condition,
+and trend retain their provider representations.
 
 Missing/invalid fields are skipped and reported without manufactured zeroes.
 All valid changed values use the shared FIFO publishing queue and rate limit.
@@ -660,7 +673,8 @@ and [whole-day/daytime handler](circuitpython/Apple_Weatherkit/f6a.py):
 
 Temperatures become Fahrenheit with one decimal, wind speeds whole mph,
 wind direction compass text, and fractional cloud/humidity/precipitation chances
-whole percentages. Precipitation/snow amounts remain mm. UV index remains raw;
+whole percentages. Precipitation/snow amounts convert from mm to inches with
+two decimal places. UV index remains raw;
 moon phase and celestial/forecast timestamps remain provider text. Missing/null
 moonrise or moonset may be legitimate and are skipped, never fabricated as `"0"`.
 Absent or invalid nested objects do not prevent valid root/other-period values

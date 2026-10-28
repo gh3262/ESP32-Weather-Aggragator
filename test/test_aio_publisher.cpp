@@ -762,7 +762,7 @@ int main() {
   assert(sent[1].topic == "test-user/feeds/m5precipitationchance" &&
          sent[1].value == "50");
   assert(sent[2].topic == "test-user/feeds/m5precipitationintensity" &&
-         sent[2].value == "0");
+         sent[2].value == "0.00");
   assert(sent[3].topic == "test-user/feeds/m30starttime");
   assert(sent[4].topic == "test-user/feeds/m30precipitationchance");
   assert(sent[5].topic == "test-user/feeds/m30precipitationintensity");

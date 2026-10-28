@@ -77,6 +77,56 @@ bool enqueueGroup(const char* name, const FeedSample* samples, size_t count) {
 
 int main() {
   using namespace weatherkit_current;
+  size_t inchMappings = 0;
+  for (const auto& source : sources) {
+    reset();
+    expectedGroup = groupName(source.group);
+    std::map<std::string, std::string> expected;
+    for (const char* value : {"25.4", "25.401", "0.25", "0", "-1", "null", "\"25.4\"", "false"}) {
+      JsonDocument document;
+      JsonDocument input;
+      assert(!deserializeJson(input, value));
+      for (size_t i = 0; i < source.count; ++i) {
+        const auto& mapping = source.mappings[i];
+        const bool amountOrIntensity =
+            strstr(mapping.field, "precipitationAmount") ||
+            strstr(mapping.field, "precipitationIntensity") ||
+            strstr(mapping.field, "snowfallAmount") ||
+            strstr(mapping.field, "snowfallIntensity");
+        assert((mapping.conversion == Conversion::Inches) == amountOrIntensity);
+        if (!amountOrIntensity) {
+          continue;
+        }
+        const char* dot = strchr(mapping.field, '.');
+        JsonVariant field = dot
+            ? document[std::string(mapping.field, dot - mapping.field)][dot + 1].to<JsonVariant>()
+            : document[mapping.field].to<JsonVariant>();
+        field.set(input.as<JsonVariantConst>());
+      }
+      std::string json;
+      serializeJson(document, json);
+      const size_t before = submissions;
+      deliver(json, source.group);
+      update(0);
+      if (strcmp(value, "25.4") == 0) {
+        for (size_t i = 0; i < source.count; ++i) {
+          if (source.mappings[i].conversion == Conversion::Inches) {
+            expected.emplace(source.mappings[i].feed, "1.00");
+            ++inchMappings;
+          }
+        }
+        assert(submitted == expected);
+      } else if (strcmp(value, "0.25") == 0 || strcmp(value, "0") == 0) {
+        for (auto& sample : expected) {
+          sample.second = strcmp(value, "0") == 0 ? "0.00" : "0.01";
+        }
+        assert(submitted == expected && submissions == before + 1);
+      } else {
+        assert(submissions == before);
+      }
+    }
+  }
+  assert(inchMappings == 41);
   reset();
   const size_t length = strlen(payload);
   receive(Group::Current, payload, 17, 0, length);
@@ -93,7 +143,7 @@ int main() {
   assert(submitted.at("currentconditioncode") == "MostlyClear");
   assert(submitted.at("currentdaylight") == "Its light");
   assert(submitted.at("currenthumidity") == "65");
-  assert(submitted.at("currentprecipitationintensity") == "0");
+  assert(submitted.at("currentprecipitationintensity") == "0.00");
   assert(submitted.at("currentpressure") == "1013.25");
   assert(submitted.at("currentpressuretrend") == "steady");
   assert(submitted.at("currenttemperature") == "68.0");
@@ -213,7 +263,7 @@ int main() {
     assert(submitted.size() == 3);
     assert(submitted.at(prefix + "starttime") == "2026-10-24T16:45:00Z");
     assert(submitted.at(prefix + "precipitationchance") == "65");
-    assert(submitted.at(prefix + "precipitationintensity") == "0.25");
+    assert(submitted.at(prefix + "precipitationintensity") == "0.01");
     assert(submittedGroup == expectedGroup);
 
     submitted.clear();
@@ -221,7 +271,7 @@ int main() {
     update(1);
     assert(submitted.size() == 2);
     assert(submitted.at(prefix + "precipitationchance") == "0");
-    assert(submitted.at(prefix + "precipitationintensity") == "0");
+    assert(submitted.at(prefix + "precipitationintensity") == "0.00");
 
     const size_t beforeInvalid = submissions;
     deliver(R"({"startTime":null,"precipitationChance":1.1,"precipitationIntensity":-1})", group);
@@ -273,10 +323,10 @@ int main() {
       {"hours1start", "2026-10-24T18:00:00Z"},
       {"hours1cloudcover", "25"}, {"hours1conditioncode", "Clear"},
       {"hours1daylight", "It will be light"}, {"hours1humidity", "65"},
-      {"hours1precipitationamount", "0"}, {"hours1precipitationchance", "50"},
-      {"hours1precipitationtype", "rain"}, {"hours1precipitationintensity", "0"},
+      {"hours1precipitationamount", "0.00"}, {"hours1precipitationchance", "50"},
+      {"hours1precipitationtype", "rain"}, {"hours1precipitationintensity", "0.00"},
       {"hours1pressure", "1013.25"}, {"hours1pressuretrend", "steady"},
-      {"hours1snowfallintensity", "0"}, {"hours1snowfallamount", "0"},
+      {"hours1snowfallintensity", "0.00"}, {"hours1snowfallamount", "0.00"},
       {"hours1temperature", "68.0"}, {"hours1temperatureapparent", "66.2"},
       {"hours1temperaturedewpoint", "50.0"}, {"hours1uvindex", "3"},
       {"hours1visibility", "10"}, {"hours1winddirection", "SW"},
@@ -381,8 +431,8 @@ int main() {
       {"days1start", "2026-10-25T05:00:00Z"}, {"days1end", "2026-10-26T05:00:00Z"},
       {"days1conditioncode", "Clear"}, {"days1maxuvindex", "3"}, {"days1moonphase", "Full"},
       {"days1moonrise", "2026-10-25T22:00:00Z"}, {"days1moonset", "2026-10-25T10:00:00Z"},
-      {"days1precipitationamount", "0"}, {"days1precipitationchance", "65"},
-      {"days1precipitationtype", "clear"}, {"days1snowfallamount", "0"},
+      {"days1precipitationamount", "0.00"}, {"days1precipitationchance", "65"},
+      {"days1precipitationtype", "clear"}, {"days1snowfallamount", "0.00"},
       {"days1solarmidnight", "2026-10-25T05:30:00Z"},
       {"days1solarnoon", "2026-10-25T17:30:00Z"}, {"days1sunrise", "2026-10-25T12:00:00Z"},
       {"days1sunrisecivil", "2026-10-25T11:30:00Z"},
@@ -396,17 +446,17 @@ int main() {
       {"days1daytimestart", "2026-10-25T12:00:00Z"},
       {"days1daytimeend", "2026-10-25T23:00:00Z"},
       {"days1daytimecloudcover", "25"}, {"days1daytimeconditioncode", "MostlyClear"},
-      {"days1daytimehumidity", "65"}, {"days1daytimeprecipitationamount", "0"},
+      {"days1daytimehumidity", "65"}, {"days1daytimeprecipitationamount", "0.00"},
       {"days1daytimeprecipitationchance", "50"}, {"days1daytimeprecipitationtype", "rain"},
-      {"days1daytimesnowfallamount", "0"}, {"days1daytimetemperaturemax", "68.0"},
+      {"days1daytimesnowfallamount", "0.00"}, {"days1daytimetemperaturemax", "68.0"},
       {"days1daytimetemperaturemin", "50.0"}, {"days1daytimewinddirection", "SW"},
       {"days1daytimewindgustspeedmax", "20"}, {"days1daytimewindspeed", "10"},
       {"days1daytimewindspeedmax", "15"},
       {"days1ovntstart", "2026-10-25T23:00:00Z"}, {"days1ovntend", "2026-10-26T12:00:00Z"},
       {"days1ovntcloudcover", "75"}, {"days1ovntconditioncode", "Cloudy"},
-      {"days1ovnthumidity", "80"}, {"days1ovntprecipitationamount", "1.25"},
+      {"days1ovnthumidity", "80"}, {"days1ovntprecipitationamount", "0.05"},
       {"days1ovntprecipitationchance", "75"}, {"days1ovntprecipitationtype", "snow"},
-      {"days1ovntsnowfallamount", "2"}, {"days1ovnttemperaturemax", "32.0"},
+      {"days1ovntsnowfallamount", "0.08"}, {"days1ovnttemperaturemax", "32.0"},
       {"days1ovnttemperaturemin", "14.0"}, {"days1ovntwinddirection", "E"},
       {"days1ovntwindgustspeedmax", "10"}, {"days1ovntwindspeed", "0"},
       {"days1ovntwindspeedmax", "20"}};
