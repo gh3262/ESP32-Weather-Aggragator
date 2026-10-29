@@ -61,8 +61,11 @@ void reset() {
   lastAttemptAt = nextAttemptDelay = lastSuccessAt = 0;
   haveSuccess = false;
   pendingSamples.clear();
+  pendingSince = lastAcceptedAt = 0;
+  haveAccepted = false;
   publishRetryPending = false;
   lastPublishRetryAt = failedRequests = 0;
+  https_gate::release();
   testTask = nullptr;
   testTaskFailure = false;
   testHttpStatus = HTTP_CODE_OK;
@@ -135,12 +138,46 @@ int main() {
   assert(value("openweather.owtimezone") == "-7");
   assert(value("rt") == "OpenWeather");
   assert(health(1) == HealthStatus::Green);
+  assert(health(kStaleAfterMs) == HealthStatus::Green);
+  assert(health(kStaleAfterMs + 1) == HealthStatus::Red);
 
   const uint32_t firstPoll = kPollIntervalMs;
   update(true, true, firstPoll - 1);
   assert(testHttpCalls == 1);
   update(true, true, firstPoll);
   assert(testTask);
+  assert(health(firstPoll) == HealthStatus::Green);
+
+  // Normal queue-admission delay stays green; prolonged delay escalates.
+  testTask(nullptr);
+  acceptGroup = false;
+  update(true, true, firstPoll + 1);
+  assert(!pendingSamples.empty());
+  assert(health(firstPoll + kQueueDelayAmberMs) == HealthStatus::Green);
+  assert(health(firstPoll + 1 + kQueueDelayAmberMs) == HealthStatus::Amber);
+  assert(health(firstPoll + 1 + kStaleAfterMs) == HealthStatus::Red);
+  acceptGroup = true;
+  update(true, true, firstPoll + 1 + kStaleAfterMs);
+  assert(pendingSamples.empty());
+  assert(health(firstPoll + 1 + kStaleAfterMs) == HealthStatus::Green);
+
+  // Request failures: amber while retrying, red after three in a row.
+  reset();
+  begin();
+  update(true, true, 0);
+  testTask(nullptr);
+  update(true, true, 1);
+  testHttpStatus = 500;
+  uint32_t failAt = kPollIntervalMs;
+  for (int failure = 1; failure <= 3; ++failure) {
+    update(true, true, failAt);
+    testTask(nullptr);
+    update(true, true, failAt + 1);
+    assert(failedRequests == static_cast<uint32_t>(failure));
+    assert(health(failAt + 1) ==
+           (failure < 3 ? HealthStatus::Amber : HealthStatus::Red));
+    failAt += kRetryDelayMs + 1;
+  }
 
   reset();
   begin();
@@ -229,6 +266,32 @@ int main() {
   assert(testHttpCalls == 1);
   update(true, true, 60001);
   assert(testTask);
+
+  reset();
+  begin();
+  update(false, true, 0);
+  assert(!testTask);
+
+  // A busy shared HTTPS slot defers the poll without counting an attempt.
+  reset();
+  begin();
+  assert(https_gate::tryAcquire());
+  update(true, true, 0);
+  assert(!testTask && !attempted);
+  https_gate::release();
+  update(true, true, 5);
+  assert(testTask && attempted);
+  assert(!https_gate::tryAcquire());
+  testTask(nullptr);
+  assert(https_gate::tryAcquire());
+  https_gate::release();
+
+  reset();
+  begin();
+  testTaskFailure = true;
+  update(true, true, 0);
+  assert(failedRequests == 1 && https_gate::tryAcquire());
+  https_gate::release();
 
   reset();
   begin();

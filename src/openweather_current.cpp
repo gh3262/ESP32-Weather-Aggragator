@@ -19,6 +19,7 @@
 #include <time.h>
 
 #include "aio_publisher.h"
+#include "https_gate.h"
 #include "openweather_root_ca.h"
 #include "weather_transforms.h"
 
@@ -34,6 +35,7 @@ constexpr uint32_t kPollIntervalMs = 30UL * 60UL * 1000UL;
 constexpr uint32_t kRetryDelayMs = 60UL * 1000UL;
 constexpr uint32_t kPublishRetryMs = 2000;
 constexpr uint32_t kStaleAfterMs = 2UL * kPollIntervalMs;
+constexpr uint32_t kQueueDelayAmberMs = 10UL * 60UL * 1000UL;
 constexpr size_t kMaxResponseBytes = 4096;
 constexpr char kGroupName[] = "OpenWeather current";
 
@@ -59,6 +61,9 @@ uint32_t nextAttemptDelay = 0;
 uint32_t lastSuccessAt = 0;
 bool haveSuccess = false;
 std::vector<Sample> pendingSamples;
+uint32_t pendingSince = 0;
+uint32_t lastAcceptedAt = 0;
+bool haveAccepted = false;
 bool publishRetryPending = false;
 uint32_t lastPublishRetryAt = 0;
 uint32_t failedRequests = 0;
@@ -432,6 +437,7 @@ FetchResult fetchWeather() {
 
 void fetchTask(void*) {
   FetchResult result = fetchWeather();
+  https_gate::release();
   {
     std::lock_guard<std::mutex> guard(resultLock);
     workerResult = std::move(result);
@@ -475,6 +481,7 @@ void consumeWorkerResult(uint32_t now) {
   failedRequests = 0;
   nextAttemptDelay = kPollIntervalMs;
   pendingSamples = std::move(samples);
+  pendingSince = now;
   publishRetryPending = false;
   Serial.printf("OpenWeather: HTTPS request succeeded; %u samples ready for paced publication\n",
                 static_cast<unsigned>(pendingSamples.size()));
@@ -495,6 +502,8 @@ void retryPublish(uint32_t now) {
                   static_cast<unsigned>(samples.size()));
     pendingSamples.clear();
     publishRetryPending = false;
+    lastAcceptedAt = now;
+    haveAccepted = true;
   } else {
     Serial.println("OpenWeather: retaining complete snapshot for publish-queue retry");
     publishRetryPending = true;
@@ -524,45 +533,52 @@ void update(bool wifiConnected, bool timeSynchronized, uint32_t now) {
   if (!wifiConnected || !timeSynchronized || !pendingSamples.empty()) {
     return;
   }
-  bool busy;
   {
     std::lock_guard<std::mutex> guard(resultLock);
-    busy = workerRunning || resultPending;
-    if (!busy && (!attempted || now - lastAttemptAt >= nextAttemptDelay)) {
-      workerRunning = true;
-    } else {
+    if (workerRunning || resultPending ||
+        (attempted && now - lastAttemptAt < nextAttemptDelay)) {
       return;
     }
+    // Another REST worker owns the TLS slot; try again on a later loop.
+    if (!https_gate::tryAcquire()) {
+      return;
+    }
+    workerRunning = true;
   }
   attempted = true;
   lastAttemptAt = now;
   nextAttemptDelay = kPollIntervalMs;
   if (xTaskCreate(fetchTask, "openweather", 8192, nullptr, 1, nullptr) != pdPASS) {
+    https_gate::release();
     std::lock_guard<std::mutex> guard(resultLock);
     workerRunning = false;
     failRequest(now, "unable to start worker", 0);
   }
 }
 
+// Health reflects successful polls and acceptance by the shared publisher;
+// broker delivery is reported by the AIO pixel. In-flight requests and normal
+// queue-admission delays remain green.
 HealthStatus health(uint32_t now) {
   if (!configured) {
     return HealthStatus::Off;
   }
-  bool busy;
-  {
-    std::lock_guard<std::mutex> guard(resultLock);
-    busy = workerRunning || resultPending;
+  if (!pendingSamples.empty()) {
+    const uint32_t waiting = now - pendingSince;
+    if (waiting >= kStaleAfterMs) {
+      return HealthStatus::Red;
+    }
+    if (waiting >= kQueueDelayAmberMs) {
+      return HealthStatus::Amber;
+    }
   }
-  if (!pendingSamples.empty() || busy || !haveSuccess) {
-    if (haveSuccess && now - lastSuccessAt >= kStaleAfterMs) {
-      return HealthStatus::Red;
-    }
-    if (!haveSuccess && failedRequests >= 3) {
-      return HealthStatus::Red;
-    }
+  if (failedRequests >= 3) {
+    return HealthStatus::Red;
+  }
+  if (!haveAccepted) {
     return HealthStatus::Amber;
   }
-  if (now - lastSuccessAt >= kStaleAfterMs || failedRequests >= 3) {
+  if (now - lastAcceptedAt >= kStaleAfterMs) {
     return HealthStatus::Red;
   }
   return failedRequests ? HealthStatus::Amber : HealthStatus::Green;

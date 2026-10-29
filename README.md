@@ -50,9 +50,10 @@ PlatformIO/Arduino firmware for a Seeed Studio XIAO ESP32-S3 with an Adafruit
 - USB CDC serial diagnostics at 115200 baud; no wait for a serial monitor at boot.
 - Eight-pixel RGB NeoPixel ring on D0 (GPIO1), using pixel 0 for network
   status: amber while scanning/connecting, green when connected, and red when
-  unconfigured, initialization fails, or waiting to reconnect. Two additional
-  pixels show AIO publishing health (1) and weather-source health (2; WeatherKit
-  and OpenWeather); pixels 3-7 remain off. Brightness is limited to 16 out of
+  unconfigured, initialization fails, or waiting to reconnect. Additional
+  pixels show AIO publishing health (1), WeatherKit reception health (2),
+  OpenWeather polling health (3), and WeatherAPI polling health (4); pixels
+  5-7 remain off. Brightness is limited to 16 out of
   255 in software.
   Enabled using `kEnableStatusPixels = true`; set it to `false` to isolate
   pixel initialization and updates during Wi-Fi diagnostics.
@@ -611,7 +612,7 @@ that did not occur, so an absent `rain` object or `rain.1h` publishes `0.00`
 snapshot remains in RAM and is retried until accepted; the publisher performs
 the existing pacing and change detection. This migration intentionally does
 not read pressure history or derive `owpresstrend`/`owptval`. Check the
-OpenWeather status pixel (shared with WeatherKit), serial request/parse logs,
+OpenWeather status pixel (3), serial request/parse logs,
 and `aggregator.log` for successful groups after upload.
 Host tests and the firmware build pass. On 2026-10-28, the owner reported
 successful board/API-key operation and verified startup rain publication:
@@ -619,6 +620,50 @@ after manually adding nonzero values to the OpenWeather rain feed and
 restarting the updated firmware, a zero value appeared in the online feed.
 This confirms the startup correction; a rain-to-dry transition without a
 restart has not yet been verified on the board.
+
+The 30-minute interval preserves the legacy cadence and remains unchanged
+for now. Next, compare successive polls to record how many OpenWeather feeds
+change at a checkpoint. Later, use `owasof` changes across polls to estimate
+how often OpenWeather updates this location before considering a shorter
+interval.
+
+### WeatherAPI current conditions
+
+The main firmware requests WeatherAPI.com (free tier)
+`/v1/current.json?q=LATITUDE,LONGITUDE&aqi=yes` using `WEATHERAPI_KEY`,
+`LATITUDE`, and `LONGITUDE` from the ignored local `include/credentials.h`.
+Requests start about every 25 minutes once Wi-Fi and NTP are ready, five
+minutes shorter than OpenWeather so the two polls drift apart. The legacy
+script used plain HTTP; the firmware uses verified HTTPS with the Let's Encrypt
+ISRG Root X1 and Root YR anchors, the same bounded timeouts, 4 KB response cap,
+and worker-task pattern as OpenWeather. Failed requests retry after 60
+seconds. The API key is never printed. A live response with air quality was
+about 1 KB on 2026-10-28.
+
+The OpenWeather and WeatherAPI workers share a single HTTPS slot, so only
+one REST TLS session runs beside the MQTT connection at a time. A poll that
+finds the slot busy waits for a later loop without counting as an attempt.
+This bounds the extra heap that overlapping TLS sessions would otherwise use.
+
+The adapter publishes the 16 existing `wapi.*` feeds as group
+`WeatherAPI current` through the shared publisher: `aqi` (US EPA index 1-6),
+`cond-code`, `desc`, `as-of` (the provider's local `last_updated` text),
+`clouds`, `dew-point`, `feels-like`, `heat-index`, `humidity`, `precip`
+(inches), `pressure` (mb), `temperature`, `wind-chill`, `wind-gust`,
+`wind-speed` (mph), and `wind-dir`. Numeric values use the provider's
+imperial fields as reported, at up to six significant digits (for example
+`68.9`, `1021`, `0`). `desc` uses the legacy condition-code lookup verbatim;
+an unknown code still publishes `cond-code` but skips `desc` and logs the
+code. `wind-dir` now uses the shared 16-point compass abbreviations (`N`,
+`NNE`, `E`, ...) instead of the legacy full names for cardinal points.
+Following the migration decisions, metadata (`lat`/`lon`/`created_at`) and
+`rt` are no longer sent, and the unused NWS alerts URL is not migrated (alerts
+will be a separate group). Null, absent, malformed, or out-of-range fields are
+skipped individually; valid zeroes are published. Queue-deferred snapshots are
+retained and retried as for OpenWeather. Check pixel 4, serial `WeatherAPI:`
+logs, and `aggregator.log` for
+`Sent feed group WeatherAPI current - Number Updated: N` after upload.
+Host tests and the firmware build pass; board validation is pending.
 
 ### WeatherKit minute forecasts (m5 and m30)
 
@@ -1035,7 +1080,7 @@ The helper assumes eight standard 800 kHz GRB RGB pixels, not RGBW.
 color components are 0-255 before global brightness scaling. `setPixel` updates
 only the selected pixel and sends the ring buffer immediately; `clear` turns
 the whole ring off. Initialization and invalid-index errors are logged to USB
-serial. The main loop owns pixels 0-2; pixels 3-7 are reserved for future indicators.
+serial. The main loop owns pixels 0-4; pixels 5-7 are reserved for future indicators.
 These calls should remain on the main loop task, not interrupt handlers.
 
 | Position (index) | Purpose | Green | Amber | Red |
@@ -1043,6 +1088,8 @@ These calls should remain on the main loop task, not interrupt handlers.
 | First (0) | Wi-Fi | Connected | Scanning/connecting | Offline/unconfigured |
 | Second (1) | AIO publishing | Connected with a successful publish acknowledgement | Starting/reconnecting, no acknowledgement yet, acknowledgement pending for 10 seconds, publish enqueue failure, or account error/throttle | Unavailable for 30 seconds, or publish acknowledgement timeout |
 | Third (2) | WeatherKit reception | Every enabled source topic has supplied usable data within 3 minutes | Waiting for first data, or any topic is at least 3 minutes old | MQTT disconnected after first connection, or any topic is at least 5 minutes old |
+| Fourth (3) | OpenWeather polling | Latest successful poll was accepted by the shared publisher within 60 minutes, including while the next request runs or a snapshot waits briefly for queue space | Waiting for first accepted poll, retrying after 1-2 failed requests, or a snapshot has waited 10 minutes for queue space | Three consecutive failed requests, no accepted poll for 60 minutes, or a snapshot has waited 60 minutes for queue space |
+| Fifth (4) | WeatherAPI polling | Same rule as OpenWeather, with a 50-minute window (two 25-minute polls) | Waiting for first accepted poll, retrying after 1-2 failed requests, or a snapshot has waited 10 minutes for queue space | Three consecutive failed requests, no accepted poll for 50 minutes, or a snapshot has waited 50 minutes for queue space |
 
 AIO and WeatherKit use the same MQTT connection. Pixel 1 reports transport and
 publish acknowledgement health; pixel 2 tracks reception separately for current,
@@ -1054,6 +1101,8 @@ Before the first MQTT connection, pixel 2 is amber for 30 seconds, then red;
 its initial-data grace period is 5 minutes from the first connection.
 Pixel 1's timeout/failure indication clears after a successful acknowledgement;
 an idle queue does not become unhealthy simply because nothing changed.
+Pixels 3 and 4 count an unchanged snapshot as accepted. Broker delivery of
+accepted OpenWeather and WeatherAPI samples is reported by pixel 1.
 
 The EYESPI BFF's optional IRQ line also uses D0; the current non-touch display
 does not need it. D4/SDA and D5/SCL remain reserved for the STEMMA QT connector.
@@ -1061,10 +1110,12 @@ No I2C devices are initialized yet.
 
 After uploading, check that pixel 0 progresses from amber to green, stays dim,
 and changes to red following a Wi-Fi disconnection. Pixel 1 should become green
-after the initial log acknowledgement, and pixel 2 after all enabled topics
-arrive. Disconnect Wi-Fi to check pixels 0 and 2 turn red and pixel 1 progresses
+after the initial log acknowledgement, pixel 2 after all enabled topics
+arrive, pixel 3 after the first OpenWeather poll is accepted, and pixel 4
+after the first WeatherAPI poll is accepted. Disconnect
+Wi-Fi to check pixels 0 and 2 turn red and pixel 1 progresses
 from amber to red after 30 seconds (or earlier on an outstanding publish timeout).
-Reconnect and verify publishing and source reception recover. Pixels 3-7 should
+Reconnect and verify publishing and source reception recover. Pixels 5-7 should
 remain off. A successful build/initialization cannot verify the physical ring
 or its RGB channel order.
 
@@ -1170,8 +1221,22 @@ if ($LASTEXITCODE -eq 0) { & .\.pio\host-tests\openweather_current.exe }
 
 They verify all 21 feed mappings, unit conversions, valid zeroes, missing and
 invalid fields, API-offset timestamps, worker scheduling and retry timing,
-timer wraparound, and retained snapshots after queue deferral. They do not
-validate live API credentials, network behavior, or hardware TLS.
+timer wraparound, retained snapshots after queue deferral, and the shared
+HTTPS slot. They do not validate live API credentials, network behavior, or
+hardware TLS.
+
+[WeatherAPI tests](test/test_weatherapi_current.cpp) follow the same pattern
+with their own fake HTTPS client:
+
+```powershell
+& "$env:USERPROFILE\.platformio\penv\Scripts\python.exe" -m ziglang c++ -std=c++11 -Wall -Wextra -Werror -pedantic -Itest\weatherapi_support -Itest\support -Iinclude "-I.pio\libdeps\seeed_xiao_esp32s3\ArduinoJson\src" test\test_weatherapi_current.cpp -o .pio\host-tests\weatherapi_current.exe
+if ($LASTEXITCODE -eq 0) { & .\.pio\host-tests\weatherapi_current.exe }
+```
+
+They verify all 16 feed mappings, the legacy condition lookup, compass
+abbreviations, numeric formatting, invalid-field skipping, the absence of
+`rt` and metadata, the 25-minute schedule and retries, health transitions,
+the shared HTTPS slot, oversize responses, and timer wraparound.
 
 ## Wiring
 
@@ -1212,9 +1277,9 @@ is upside down, change `setRotation(3)` to `setRotation(1)`.
    `VISUAL_CROSSING_KEY`, `WWO_KEY` (World Weather Online), and
    `EXCHANGE_RATE_KEY`. Historical settings names `openweather_token` and
    `WEATHER_API_KEY` duplicate `OPENWEATHER_KEY` and `WEATHERAPI_KEY`,
-   respectively; use the canonical names in this header. OpenWeather also
-   uses the decimal-degree `LATITUDE` and `LONGITUDE` values for its current
-   weather request.
+   respectively; use the canonical names in this header. OpenWeather and
+   WeatherAPI also use the decimal-degree `LATITUDE` and `LONGITUDE` values
+   for their current weather requests.
 3. Run `pio run` or use PlatformIO's Build action.
 4. Upload using PlatformIO's Upload action or `pio run --target upload`.
 5. Open the serial monitor with `pio device monitor --baud 115200`.

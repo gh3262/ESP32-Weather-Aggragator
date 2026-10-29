@@ -514,6 +514,28 @@ Six pre-send pauses add 24 seconds, giving **21 min 24 s + network** per fetch.
 The board reloads after 12 fetches, at least **4 h 16 min 48 s** plus overhead.
 The NWS alert URL assigned in this file is never requested.
 
+### ESP32 migration
+
+The main firmware polls the same endpoint over verified HTTPS
+(`https://api.weatherapi.com/v1/current.json?...&aqi=yes`) about every
+25 minutes, with a 60-second retry after failures. It publishes all 16 `wapi.*`
+feeds in the table above as group `WeatherAPI current` through the shared
+paced/change-detecting publisher. Its HTTPS worker shares one request slot
+with OpenWeather, so the two REST requests never overlap.
+
+Differences from the legacy script:
+
+- `wapi.wind-dir` uses the shared 16-point abbreviations (`N`, `NNE`, `E`, ...)
+  instead of the legacy full names for cardinal points.
+- No metadata (`lat`/`lon`/`created_at`) and no `rt` write.
+- Numbers are formatted to at most six significant digits, so whole values
+  drop a trailing `.0` (for example `1021`, `0`).
+- `wapi.desc` keeps the legacy lookup verbatim. An unknown code publishes
+  `wapi.cond-code`, skips `wapi.desc`, and logs the code instead of crashing.
+- Missing, null, invalid, or out-of-range values (for example an EPA index
+  outside 1-6) are skipped individually, preserving any prior AIO value.
+- The NWS alerts URL is not migrated; alerts will be a separate group.
+
 ## 6. NWS active alerts
 
 Source: [NWS Alerts/code.py](circuitpython/NWS%20Alerts/code.py).

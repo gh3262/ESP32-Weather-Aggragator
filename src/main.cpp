@@ -10,6 +10,7 @@
 #include "status_pixels.h"
 #include "aio_publisher.h"
 #include "openweather_current.h"
+#include "weatherapi_current.h"
 #include "wifi_retry.h"
 
 #if __has_include("credentials.h")
@@ -83,20 +84,13 @@ void updateStatusPixels(uint32_t now) {
     default:
       break;
   }
-  HealthStatus weatherHealth = aio_publisher::weatherHealth(now);
-  const HealthStatus openWeatherHealth = openweather_current::health(now);
-  if (openWeatherHealth == HealthStatus::Red ||
-      (openWeatherHealth == HealthStatus::Amber &&
-       weatherHealth != HealthStatus::Red) ||
-      (weatherHealth == HealthStatus::Off &&
-       openWeatherHealth != HealthStatus::Off)) {
-    weatherHealth = openWeatherHealth;
-  }
   const HealthStatus states[] = {
-      wifiHealth, aio_publisher::health(now), weatherHealth};
-  static bool initialized[3] = {};
-  static HealthStatus previous[3] = {};
-  for (uint16_t index = 0; index < 3; ++index) {
+      wifiHealth, aio_publisher::health(now), aio_publisher::weatherHealth(now),
+      openweather_current::health(now), weatherapi_current::health(now)};
+  constexpr uint16_t kStatusPixelCount = sizeof(states) / sizeof(states[0]);
+  static bool initialized[kStatusPixelCount] = {};
+  static HealthStatus previous[kStatusPixelCount] = {};
+  for (uint16_t index = 0; index < kStatusPixelCount; ++index) {
     if (initialized[index] && previous[index] == states[index]) {
       continue;
     }
@@ -482,6 +476,7 @@ void setup() {
   Serial.println("Send t for the publisher test to aggregator.diag, ? for help.");
   aio_publisher::begin();
   openweather_current::begin();
+  weatherapi_current::begin();
   if (kEnableStatusPixels) {
     pixelsReady = status_pixels::begin();
   } else {
@@ -536,6 +531,8 @@ void loop() {
                         timeSynchronized, now);
   openweather_current::update(networkState == NetworkState::Online,
                               timeSynchronized, now);
+  weatherapi_current::update(networkState == NetworkState::Online,
+                             timeSynchronized, now);
   runConnectivityWatchdog(now);
   updateStatusPixels(now);
   if (refreshNeeded || now - lastRefreshAt >= kRefreshMs) {
