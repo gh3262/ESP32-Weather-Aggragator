@@ -88,6 +88,7 @@ void reset(uint32_t now = 0, bool diagnostics = false) {
   brokerThrottleText[0] = '\0';
   rateResult = RateResult{};
   rateResultPending = rateWorkerRunning = false;
+  https_gate::release();
   lastRate = RateResult{};
   rateAttempted = false;
   rateAttemptAt = 0;
@@ -334,6 +335,23 @@ int main() {
   tick(60001);
   assert(rateFailures == 1);
   assert(Serial.output.find("unable to start account rate check task") != std::string::npos);
+  assert(std::string(https_gate::owner()) == "-");
+
+  // The rate check waits for the shared HTTPS slot and releases it when done.
+  reset();
+  assert(std::string(https_gate::owner()) == "AIO rate");
+  testTask(nullptr);
+  assert(std::string(https_gate::owner()) == "-");
+  tick(1);
+  assert(https_gate::tryAcquire("OpenWeather"));
+  tick(60000);
+  assert(!rateWorkerRunning && rateAttemptAt == 0);
+  https_gate::release();
+  tick(60001);
+  assert(rateWorkerRunning && rateAttemptAt == 60001);
+  assert(std::string(https_gate::owner()) == "AIO rate");
+  testTask(nullptr);
+  tick(60002);
 
   reset(UINT32_MAX - 20000);
   tick(UINT32_MAX - 18000);
@@ -1388,7 +1406,8 @@ int main() {
   ESP.minFreeHeap = 30000;
   ESP.freeHeap = 45000;
   ESP.maxAllocHeap = 20000;
-  https_gate::tryAcquire("OpenWeather");
+  testTask(nullptr);
+  assert(https_gate::tryAcquire("OpenWeather"));
   tick(5000);
   assert(Serial.output.find(
       "Heap: new low min=30000 free=45000 largest=20000 up_s=5 https=OpenWeather "

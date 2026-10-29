@@ -660,10 +660,11 @@ and worker-task pattern as OpenWeather. Failed requests retry after 60
 seconds. The API key is never printed. A live response with air quality was
 about 1 KB on 2026-10-28.
 
-The OpenWeather and WeatherAPI workers share a single HTTPS slot, so only
-one REST TLS session runs beside the MQTT connection at a time. A poll that
-finds the slot busy waits for a later loop without counting as an attempt.
-This bounds the extra heap that overlapping TLS sessions would otherwise use.
+The OpenWeather and WeatherAPI workers and the Adafruit IO account rate check
+share a single HTTPS slot, so only one REST TLS session runs beside the MQTT
+connection at a time. A poll that finds the slot busy waits for a later loop
+without counting as an attempt. This bounds the extra heap that overlapping
+TLS sessions would otherwise use.
 
 The adapter publishes the 16 existing `wapi.*` feeds as group
 `WeatherAPI current` through the shared publisher: `aqi` (US EPA index 1-6),
@@ -690,7 +691,14 @@ there were no request errors, publish timeouts, throttling, MQTT disconnects,
 or new duplicate reports. Minimum free heap reached 2,432 bytes within the
 first hour (versus 4,916 bytes over the earlier OpenWeather-only run), so
 heap headroom is still being monitored; see the `Heap: new low` serial line
-under soak-test diagnostics.
+under soak-test diagnostics. That logging showed the minimum (1,892 bytes in a
+later run) occurred when an OpenWeather poll and the Adafruit IO rate check
+started TLS handshakes in the same second; the rate check now also uses the
+shared HTTPS slot. With that change and the MQTT retransmit fix, a 9.3-hour
+overnight run (2026-10-28/29) had a minimum free heap of 54,440 bytes (reached
+in the first hour, then flat), no `Heap: new low` lines, no publish timeouts,
+throttling, REST request errors, or new duplicates, and recovered
+automatically from one Wi-Fi drop.
 
 ### WeatherKit minute forecasts (m5 and m30)
 

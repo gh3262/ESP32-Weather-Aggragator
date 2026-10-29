@@ -264,6 +264,7 @@ RateResult fetchRate() {
 
 void rateTask(void*) {
   const RateResult result = fetchRate();
+  https_gate::release();
   {
     std::lock_guard<std::mutex> guard(rateLock);
     rateResult = result;
@@ -322,12 +323,17 @@ void updateRate(bool ready, uint32_t now) {
     if (rateWorkerRunning) {
       return;
     }
+    // Share the REST TLS slot; concurrent handshakes exhausted the heap.
+    if (!https_gate::tryAcquire("AIO rate")) {
+      return;
+    }
     rateWorkerRunning = true;
   }
   rateAttempted = true;
   rateAttemptAt = now;
   rateRefreshRequested = false;
   if (xTaskCreate(rateTask, "aio-rate", 8192, nullptr, 1, nullptr) != pdPASS) {
+    https_gate::release();
     std::lock_guard<std::mutex> guard(rateLock);
     rateWorkerRunning = false;
     ++rateFailures;
