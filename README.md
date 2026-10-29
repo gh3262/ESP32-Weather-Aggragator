@@ -52,8 +52,8 @@ PlatformIO/Arduino firmware for a Seeed Studio XIAO ESP32-S3 with an Adafruit
   status: amber while scanning/connecting, green when connected, and red when
   unconfigured, initialization fails, or waiting to reconnect. Additional
   pixels show AIO publishing health (1), WeatherKit reception health (2),
-  OpenWeather polling health (3), and WeatherAPI polling health (4); pixels
-  5-7 remain off. Brightness is limited to 16 out of
+  OpenWeather polling health (3), WeatherAPI polling health (4), and NWS Alerts
+  polling health (5); pixels 6-7 remain off. Brightness is limited to 16 out of
   255 in software.
   Enabled using `kEnableStatusPixels = true`; set it to `false` to isolate
   pixel initialization and updates during Wi-Fi diagnostics.
@@ -660,11 +660,11 @@ and worker-task pattern as OpenWeather. Failed requests retry after 60
 seconds. The API key is never printed. A live response with air quality was
 about 1 KB on 2026-10-28.
 
-The OpenWeather and WeatherAPI workers and the Adafruit IO account rate check
-share a single HTTPS slot, so only one REST TLS session runs beside the MQTT
-connection at a time. A poll that finds the slot busy waits for a later loop
-without counting as an attempt. This bounds the extra heap that overlapping
-TLS sessions would otherwise use.
+The OpenWeather, WeatherAPI, and NWS Alerts workers and the Adafruit IO
+account rate check share a single HTTPS slot, so only one REST TLS session runs
+beside the MQTT connection at a time. A poll that finds the slot busy waits
+for a later loop without counting as an attempt. This bounds the extra heap
+that overlapping TLS sessions would otherwise use.
 
 The adapter publishes the 16 existing `wapi.*` feeds as group
 `WeatherAPI current` through the shared publisher: `aqi` (US EPA index 1-6),
@@ -678,9 +678,10 @@ an unknown code still publishes `cond-code` but skips `desc` and logs the
 code. `wind-dir` now uses the shared 16-point compass abbreviations (`N`,
 `NNE`, `E`, ...) instead of the legacy full names for cardinal points.
 Following the migration decisions, metadata (`lat`/`lon`/`created_at`) and
-`rt` are no longer sent, and the unused NWS alerts URL is not migrated (alerts
-will be a separate group). Null, absent, malformed, or out-of-range fields are
-skipped individually; valid zeroes are published. Queue-deferred snapshots are
+`rt` are no longer sent. NWS alerts are handled separately by the
+[NWS Alerts](#nws-active-alerts) group. Null, absent, malformed, or
+out-of-range fields are skipped individually; valid zeroes are published.
+Queue-deferred snapshots are
 retained and retried as for OpenWeather. Check pixel 4, serial `WeatherAPI:`
 logs, and `aggregator.log` for
 `Sent feed group WeatherAPI current - Number Updated: N` after upload.
@@ -699,6 +700,34 @@ overnight run (2026-10-28/29) had a minimum free heap of 54,440 bytes (reached
 in the first hour, then flat), no `Heap: new low` lines, no publish timeouts,
 throttling, REST request errors, or new duplicates, and recovered
 automatically from one Wi-Fi drop.
+
+### NWS active alerts
+
+The firmware polls the NWS
+[`/alerts/active?point=LATITUDE,LONGITUDE`](https://api.weather.gov/openapi.json)
+endpoint every five minutes and retains up to the first five returned alerts.
+It sends the identifying `User-Agent` and GeoJSON `Accept` headers required
+for API use. HTTPS certificate verification uses the shared Let's Encrypt
+trust anchors, and the request waits for the shared HTTPS slot used by the
+other providers and the Adafruit IO rate check. Failed requests retry after
+60 seconds and leave the last successfully parsed alert snapshot intact.
+
+`NWS_ALERTS_LATITUDE` and `NWS_ALERTS_LONGITUDE` in the ignored local
+`include/credentials.h` configure this request independently from the other
+providers; they default to `LATITUDE` and `LONGITUDE`. They are currently set
+to `68.088076,-162.864437` (Red Dog Mine) locally for alert testing. Change only
+these NWS-specific values to return to the production location.
+
+The shared publisher receives `nbr-alerts` (0-5) and the existing
+`weather-alerts`, `headline-alert`, and `big-alert` feeds as group
+`NWS Alerts`. With no alerts, all three text feeds receive
+`No Current Alerts`. With multiple alerts, the text feeds rotate through the
+retained alerts every 15 seconds; a single alert is sent on the next provider
+poll only when its values change. The publisher's 512-byte feed-value limit is
+respected; overlong text is explicitly marked `[truncated]`. `rt` and
+coordinate/timestamp metadata are not migrated. Queue-deferred snapshots are
+retained for retry. Check pixel 5, serial `NWS Alerts:` logs, and
+`aggregator.log` for successful groups.
 
 ### WeatherKit minute forecasts (m5 and m30)
 
@@ -1115,7 +1144,8 @@ The helper assumes eight standard 800 kHz GRB RGB pixels, not RGBW.
 color components are 0-255 before global brightness scaling. `setPixel` updates
 only the selected pixel and sends the ring buffer immediately; `clear` turns
 the whole ring off. Initialization and invalid-index errors are logged to USB
-serial. The main loop owns pixels 0-4; pixels 5-7 are reserved for future indicators.
+serial. The main loop owns pixels 0-5; pixels 6-7 are reserved for future
+indicators.
 These calls should remain on the main loop task, not interrupt handlers.
 
 | Position (index) | Purpose | Green | Amber | Red |
@@ -1125,6 +1155,7 @@ These calls should remain on the main loop task, not interrupt handlers.
 | Third (2) | WeatherKit reception | Every enabled source topic has supplied usable data within 3 minutes | Waiting for first data, or any topic is at least 3 minutes old | MQTT disconnected after first connection, or any topic is at least 5 minutes old |
 | Fourth (3) | OpenWeather polling | Latest successful poll was accepted by the shared publisher within 60 minutes, including while the next request runs or a snapshot waits briefly for queue space | Waiting for first accepted poll, retrying after 1-2 failed requests, or a snapshot has waited 10 minutes for queue space | Three consecutive failed requests, no accepted poll for 60 minutes, or a snapshot has waited 60 minutes for queue space |
 | Fifth (4) | WeatherAPI polling | Same rule as OpenWeather, with a 50-minute window (two 25-minute polls) | Waiting for first accepted poll, retrying after 1-2 failed requests, or a snapshot has waited 10 minutes for queue space | Three consecutive failed requests, no accepted poll for 50 minutes, or a snapshot has waited 50 minutes for queue space |
+| Sixth (5) | NWS Alerts polling | Latest successful poll was accepted by the shared publisher within 10 minutes, including while the next request runs or a snapshot waits briefly for queue space | Waiting for first accepted poll, retrying after 1-2 failed requests, or a snapshot has waited 2 minutes for queue space | Three consecutive failed requests, no accepted poll for 10 minutes, or a snapshot has waited 10 minutes for queue space |
 
 AIO and WeatherKit use the same MQTT connection. Pixel 1 reports transport and
 publish acknowledgement health; pixel 2 tracks reception separately for current,
@@ -1136,8 +1167,8 @@ Before the first MQTT connection, pixel 2 is amber for 30 seconds, then red;
 its initial-data grace period is 5 minutes from the first connection.
 Pixel 1's timeout/failure indication clears after a successful acknowledgement;
 an idle queue does not become unhealthy simply because nothing changed.
-Pixels 3 and 4 count an unchanged snapshot as accepted. Broker delivery of
-accepted OpenWeather and WeatherAPI samples is reported by pixel 1.
+Pixels 3-5 count an unchanged snapshot as accepted. Broker delivery of accepted
+OpenWeather, WeatherAPI, and NWS Alerts samples is reported by pixel 1.
 
 The EYESPI BFF's optional IRQ line also uses D0; the current non-touch display
 does not need it. D4/SDA and D5/SCL remain reserved for the STEMMA QT connector.
@@ -1146,11 +1177,13 @@ No I2C devices are initialized yet.
 After uploading, check that pixel 0 progresses from amber to green, stays dim,
 and changes to red following a Wi-Fi disconnection. Pixel 1 should become green
 after the initial log acknowledgement, pixel 2 after all enabled topics
-arrive, pixel 3 after the first OpenWeather poll is accepted, and pixel 4
-after the first WeatherAPI poll is accepted. Disconnect
-Wi-Fi to check pixels 0 and 2 turn red and pixel 1 progresses
-from amber to red after 30 seconds (or earlier on an outstanding publish timeout).
-Reconnect and verify publishing and source reception recover. Pixels 5-7 should
+arrive, pixel 3 after the first OpenWeather poll is accepted, pixel 4 after
+the first WeatherAPI poll is accepted, and pixel 5 after the first NWS Alerts
+snapshot is accepted. Disconnect Wi-Fi to check pixels 0 and 2 turn red and
+pixel 1 progresses from amber to red after 30 seconds (or earlier on an
+outstanding publish timeout).
+The source pixels turn red only after their documented stale/failure windows.
+Reconnect and verify publishing and source reception recover. Pixels 6-7 should
 remain off. A successful build/initialization cannot verify the physical ring
 or its RGB channel order.
 
@@ -1272,6 +1305,18 @@ They verify all 16 feed mappings, the legacy condition lookup, compass
 abbreviations, numeric formatting, invalid-field skipping, the absence of
 `rt` and metadata, the 25-minute schedule and retries, health transitions,
 the shared HTTPS slot, oversize responses, and timer wraparound.
+
+[NWS Alerts tests](test/test_nws_alerts.cpp) use a dedicated fake HTTPS client
+and test-only coordinates, not local credentials or the network:
+
+```powershell
+& "$env:USERPROFILE\.platformio\penv\Scripts\python.exe" -m ziglang c++ -std=c++11 -Wall -Wextra -Werror -pedantic -Itest\nws_support -Itest\support -Iinclude "-I.pio\libdeps\seeed_xiao_esp32s3\ArduinoJson\src" test\test_nws_alerts.cpp -o .pio\host-tests\nws_alerts.exe
+if ($LASTEXITCODE -eq 0) { & .\.pio\host-tests\nws_alerts.exe }
+```
+
+They cover active and empty responses, alert rotation, the five-alert limit,
+long-value truncation, invalid/oversized responses, the HTTPS gate, request
+headers, queue retry, and health escalation.
 
 ## Wiring
 

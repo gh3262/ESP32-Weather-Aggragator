@@ -20,7 +20,7 @@
 #include "aio_publisher.h"
 #include "https_gate.h"
 #include "weather_transforms.h"
-#include "weatherapi_root_ca.h"
+#include "letsencrypt_root_ca.h"
 
 #if __has_include("credentials.h")
 #include "credentials.h"
@@ -328,7 +328,7 @@ bool parseResponse(const std::string& body, std::vector<Sample>& samples) {
 FetchResult fetchWeather() {
   FetchResult result;
   WiFiClientSecure transport;
-  transport.setCACert(kTrustedRootCa);
+  transport.setCACert(letsencrypt_root_ca::kTrustedRootCa);
   transport.setHandshakeTimeout(5);
   HTTPClient http;
   http.setConnectTimeout(4000);

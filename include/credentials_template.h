@@ -38,6 +38,8 @@ const size_t WIFI_NETWORK_COUNT =
 // Decimal-degree strings for location-based requests. Replace in credentials.h.
 #define LATITUDE "0.0"
 #define LONGITUDE "0.0"
+#define NWS_ALERTS_LATITUDE LATITUDE
+#define NWS_ALERTS_LONGITUDE LONGITUDE
 
 // Location label and IANA timezone for provider API requests.
 #define LOCATION "YOUR_CITY, COUNTRY"

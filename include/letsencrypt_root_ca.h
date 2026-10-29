@@ -1,11 +1,9 @@
-#ifndef WEATHERAPI_ROOT_CA_H
-#define WEATHERAPI_ROOT_CA_H
+#ifndef LETSENCRYPT_ROOT_CA_H
+#define LETSENCRYPT_ROOT_CA_H
 
-namespace weatherapi_current {
+namespace letsencrypt_root_ca {
 
-// api.weatherapi.com uses Let's Encrypt (YR2 <- Root YR <- ISRG Root X1).
-// Both roots are trusted so the chain still verifies if the X1 cross-sign is
-// dropped from the served chain.
+// Trust anchors for endpoints served through the current Let's Encrypt chain.
 constexpr char kTrustedRootCa[] = R"PEM(-----BEGIN CERTIFICATE-----
 MIIFazCCA1OgAwIBAgIRAIIQz7DSQONZRGPgu2OCiwAwDQYJKoZIhvcNAQELBQAw
 TzELMAkGA1UEBhMCVVMxKTAnBgNVBAoTIEludGVybmV0IFNlY3VyaXR5IFJlc2Vh
@@ -69,6 +67,6 @@ sI1ANRYvqSFC2X1VRZfDg+wD6E21BccmifG4yWc=
 -----END CERTIFICATE-----
 )PEM";
 
-}
+}  // namespace letsencrypt_root_ca
 
 #endif

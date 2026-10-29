@@ -3,7 +3,7 @@
 
 #include <atomic>
 
-// Serializes REST HTTPS workers (OpenWeather, WeatherAPI, AIO rate check) so
+// Serializes REST HTTPS workers (weather providers and the AIO rate check) so
 // only one extra TLS session (beyond MQTT) holds heap at a time. Callers that
 // cannot acquire simply try again later.
 namespace https_gate {
