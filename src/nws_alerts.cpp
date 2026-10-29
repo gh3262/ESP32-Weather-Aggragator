@@ -75,6 +75,7 @@ FetchResult workerResult;
 bool workerRunning = false;
 bool resultPending = false;
 bool configured = false;
+AlertLevel activeAlertLevel = AlertLevel::None;
 bool attempted = false;
 uint32_t lastAttemptAt = 0;
 uint32_t nextAttemptDelay = 0;
@@ -200,6 +201,35 @@ const char* textValue(JsonVariantConst input) {
   return input.is<const char*>() ? input.as<const char*>() : "";
 }
 
+std::string withoutWhereSection(const char* description) {
+  const std::string input(description);
+  std::string output;
+  bool skipping = false;
+  for (size_t start = 0; start < input.size();) {
+    const size_t newline = input.find('\n', start);
+    const size_t end = newline == std::string::npos ? input.size() : newline + 1;
+    const std::string line = input.substr(start, end - start);
+    size_t heading = line.find_first_not_of(" \t");
+    if (heading != std::string::npos && line[heading] == '*') {
+      heading = line.find_first_not_of(" \t", heading + 1);
+      const size_t separator = line.find("...", heading);
+      bool section = heading != std::string::npos &&
+                     separator != std::string::npos && separator > heading;
+      for (size_t i = heading; section && i < separator; ++i) {
+        section = (line[i] >= 'A' && line[i] <= 'Z') || line[i] == ' ';
+      }
+      if (section) {
+        skipping = line.compare(heading, separator - heading, "WHERE") == 0;
+      }
+    }
+    if (!skipping) {
+      output.append(line);
+    }
+    start = end;
+  }
+  return output;
+}
+
 void appendCommonAlert(BoundedText& output, const JsonObjectConst& properties,
                        const char* nwsHeadline, size_t alertIndex,
                        size_t totalAlerts) {
@@ -237,7 +267,9 @@ AlertContent formatAlert(const JsonObjectConst& properties,
   BoundedText details;
   appendCommonAlert(details, properties, nwsHeadline, alertIndex, totalAlerts);
   details.append("\n");
-  details.append(textValue(properties["description"]));
+  const std::string description =
+      withoutWhereSection(textValue(properties["description"]));
+  details.append(description.c_str());
   details.append("\n");
 
   BoundedText headline;
@@ -252,8 +284,19 @@ AlertContent formatAlert(const JsonObjectConst& properties,
   return content;
 }
 
+AlertLevel eventLevel(const char* event) {
+  if (strstr(event, "Warning")) {
+    return AlertLevel::Warning;
+  }
+  if (strstr(event, "Watch")) {
+    return AlertLevel::Watch;
+  }
+  return AlertLevel::Statement;
+}
+
 bool parseResponse(char* body, size_t bodyLength,
-                   std::vector<AlertContent>& parsedAlerts) {
+                   std::vector<AlertContent>& parsedAlerts,
+                   AlertLevel& alertLevel) {
   if (!body || !bodyLength) {
     Serial.println("NWS Alerts ERROR: empty response body");
     return false;
@@ -282,6 +325,15 @@ bool parseResponse(char* body, size_t bodyLength,
 
   const JsonArrayConst features =
       document["features"].as<JsonArrayConst>();
+  for (JsonObjectConst feature : features) {
+    const char* event = textValue(feature["properties"]["event"]);
+    if (event[0]) {
+      const AlertLevel level = eventLevel(event);
+      if (level > alertLevel) {
+        alertLevel = level;
+      }
+    }
+  }
   const size_t featureCount =
       features.size() < kMaxAlerts ? features.size() : kMaxAlerts;
   for (size_t index = 0; index < featureCount; ++index) {
@@ -384,11 +436,14 @@ void consumeWorkerResult(uint32_t now) {
     return;
   }
   std::vector<AlertContent> parsedAlerts;
-  if (!parseResponse(result.body.get(), result.bodyLength, parsedAlerts)) {
+  AlertLevel alertLevel = AlertLevel::None;
+  if (!parseResponse(result.body.get(), result.bodyLength, parsedAlerts,
+                     alertLevel)) {
     failRequest(now, "invalid response", result.status);
     return;
   }
   alerts = std::move(parsedAlerts);
+  activeAlertLevel = alertLevel;
   nextAlertIndex = 0;
   snapshotPending = true;
   failedRequests = 0;
@@ -505,6 +560,25 @@ void update(bool wifiConnected, bool timeSynchronized, uint32_t now) {
     workerRunning = false;
     failRequest(now, "unable to start worker", 0);
   }
+}
+
+AlertPixel alertPixel(uint32_t now) {
+  if (!configured || activeAlertLevel == AlertLevel::None) {
+    return {0, 0, 0};
+  }
+  constexpr uint32_t kPulsePeriodMs = 2000;
+  const uint32_t phase = now % kPulsePeriodMs;
+  const uint32_t ramp = phase <= kPulsePeriodMs / 2
+                            ? phase : kPulsePeriodMs - phase;
+  const uint8_t brightness =
+      static_cast<uint8_t>(ramp * 255 / (kPulsePeriodMs / 2));
+  if (activeAlertLevel == AlertLevel::Warning) {
+    return {brightness, 0, 0};
+  }
+  if (activeAlertLevel == AlertLevel::Watch) {
+    return {brightness, static_cast<uint8_t>(brightness * 100 / 255), 0};
+  }
+  return {0, 0, brightness};
 }
 
 HealthStatus health(uint32_t now) {

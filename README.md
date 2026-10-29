@@ -53,7 +53,8 @@ PlatformIO/Arduino firmware for a Seeed Studio XIAO ESP32-S3 with an Adafruit
   unconfigured, initialization fails, or waiting to reconnect. Additional
   pixels show AIO publishing health (1), WeatherKit reception health (2),
   OpenWeather polling health (3), WeatherAPI polling health (4), and NWS Alerts
-  polling health (5); pixels 6-7 remain off. Brightness is limited to 16 out of
+  polling health (5). Pixel 7 pulses red for warnings, amber for watches, or
+  blue for statements/advisories; pixel 6 remains off. Brightness is limited to 16 out of
   255 in software.
   Enabled using `kEnableStatusPixels = true`; set it to `false` to isolate
   pixel initialization and updates during Wi-Fi diagnostics.
@@ -723,11 +724,25 @@ The shared publisher receives `nbr-alerts` (0-5) and the existing
 `NWS Alerts`. With no alerts, all three text feeds receive
 `No Current Alerts`. With multiple alerts, the text feeds rotate through the
 retained alerts every 15 seconds; a single alert is sent on the next provider
-poll only when its values change. The publisher's 512-byte feed-value limit is
-respected; overlong text is explicitly marked `[truncated]`. `rt` and
+poll only when its values change. For `big-alert`, the labeled `* WHERE...`
+description section (including wrapped location lines) is omitted because
+the request already selects alerts for the configured point. Other sections
+remain in their original order. The firmware's 512-byte feed-value limit is
+still applied afterward; overlong text is explicitly marked `[truncated]`.
+This is a local firmware bound, not an Adafruit IO feed-size limit. `rt` and
 coordinate/timestamp metadata are not migrated. Queue-deferred snapshots are
 retained for retry. Check pixel 5, serial `NWS Alerts:` logs, and
 `aggregator.log` for successful groups.
+
+Pixel 7 is a separate alert indicator: warnings pulse red, watches pulse amber,
+and statements/advisories pulse blue, in that priority order. It fades up and
+down over a two-second cycle without blocking the main loop. All returned
+alerts are considered, including alerts beyond the five retained for feed
+rotation. Other nonempty alert event types use blue as well. A successful
+empty response turns it off; failed requests retain the last known indication,
+while pixel 5 reports polling failures. Until the first successful fetch it
+remains off. This is a supplemental indicator, not a substitute for official
+warning services.
 
 ### WeatherKit minute forecasts (m5 and m30)
 
@@ -1144,8 +1159,8 @@ The helper assumes eight standard 800 kHz GRB RGB pixels, not RGBW.
 color components are 0-255 before global brightness scaling. `setPixel` updates
 only the selected pixel and sends the ring buffer immediately; `clear` turns
 the whole ring off. Initialization and invalid-index errors are logged to USB
-serial. The main loop owns pixels 0-5; pixels 6-7 are reserved for future
-indicators.
+serial. The main loop owns pixels 0-5 and the alert indicator at 7; pixel 6
+is reserved for a future indicator.
 These calls should remain on the main loop task, not interrupt handlers.
 
 | Position (index) | Purpose | Green | Amber | Red |
@@ -1156,6 +1171,9 @@ These calls should remain on the main loop task, not interrupt handlers.
 | Fourth (3) | OpenWeather polling | Latest successful poll was accepted by the shared publisher within 60 minutes, including while the next request runs or a snapshot waits briefly for queue space | Waiting for first accepted poll, retrying after 1-2 failed requests, or a snapshot has waited 10 minutes for queue space | Three consecutive failed requests, no accepted poll for 60 minutes, or a snapshot has waited 60 minutes for queue space |
 | Fifth (4) | WeatherAPI polling | Same rule as OpenWeather, with a 50-minute window (two 25-minute polls) | Waiting for first accepted poll, retrying after 1-2 failed requests, or a snapshot has waited 10 minutes for queue space | Three consecutive failed requests, no accepted poll for 50 minutes, or a snapshot has waited 50 minutes for queue space |
 | Sixth (5) | NWS Alerts polling | Latest successful poll was accepted by the shared publisher within 10 minutes, including while the next request runs or a snapshot waits briefly for queue space | Waiting for first accepted poll, retrying after 1-2 failed requests, or a snapshot has waited 2 minutes for queue space | Three consecutive failed requests, no accepted poll for 10 minutes, or a snapshot has waited 10 minutes for queue space |
+
+Pixel 7 does not use this health table: off means no known active alerts,
+and pulsing red/amber/blue means warning/watch/statement-or-advisory.
 
 AIO and WeatherKit use the same MQTT connection. Pixel 1 reports transport and
 publish acknowledgement health; pixel 2 tracks reception separately for current,
@@ -1183,8 +1201,9 @@ snapshot is accepted. Disconnect Wi-Fi to check pixels 0 and 2 turn red and
 pixel 1 progresses from amber to red after 30 seconds (or earlier on an
 outstanding publish timeout).
 The source pixels turn red only after their documented stale/failure windows.
-Reconnect and verify publishing and source reception recover. Pixels 6-7 should
-remain off. A successful build/initialization cannot verify the physical ring
+Reconnect and verify publishing and source reception recover. Pixel 6 should
+remain off; check pixel 7 against the fetched alert category. A successful
+build/initialization cannot verify the physical ring
 or its RGB channel order.
 
 ## Shared weather transformations
@@ -1315,8 +1334,9 @@ if ($LASTEXITCODE -eq 0) { & .\.pio\host-tests\nws_alerts.exe }
 ```
 
 They cover active and empty responses, alert rotation, the five-alert limit,
-long-value truncation, invalid/oversized responses, the HTTPS gate, request
-headers, queue retry, and health escalation.
+WHERE-section removal, fallback truncation, invalid/oversized responses, the
+HTTPS gate, request headers, queue retry, health escalation, alert-category
+priority (including warnings beyond the first five), and pulse colors/timing.
 
 ## Wiring
 

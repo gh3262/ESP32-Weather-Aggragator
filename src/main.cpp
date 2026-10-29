@@ -108,6 +108,17 @@ void updateStatusPixels(uint32_t now) {
     previous[index] = states[index];
     initialized[index] = true;
   }
+  const nws_alerts::AlertPixel alert = nws_alerts::alertPixel(now);
+  static nws_alerts::AlertPixel previousAlert = {0, 0, 0};
+  if (alert.red != previousAlert.red || alert.green != previousAlert.green ||
+      alert.blue != previousAlert.blue) {
+    if (!status_pixels::setPixel(7, alert.red, alert.green, alert.blue)) {
+      pixelsReady = false;
+      Serial.println("ERROR: status pixels disabled after alert write failure");
+      return;
+    }
+    previousAlert = alert;
+  }
 }
 
 bool hasConfiguredNetworks() {
