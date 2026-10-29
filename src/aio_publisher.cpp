@@ -1,4 +1,5 @@
 #include "aio_publisher.h"
+#include "https_gate.h"
 #include "weatherkit_current.h"
 
 #include <Arduino.h>
@@ -341,6 +342,45 @@ void trackQueueHighWater() {
   }
 }
 
+// Serial-only context for new heap low-water marks; the low itself happened
+// at most one loop earlier. Quiet above the threshold to skip startup noise.
+constexpr uint32_t kHeapLogBelow = 40000;
+constexpr uint32_t kHeapLogStep = 256;
+uint32_t heapLowLogged = UINT32_MAX;
+
+void logHeapLow(uint32_t now) {
+  const uint32_t low = ESP.getMinFreeHeap();
+  if (low >= kHeapLogBelow ||
+      (heapLowLogged != UINT32_MAX && low + kHeapLogStep > heapLowLogged)) {
+    return;
+  }
+  heapLowLogged = low;
+  bool rateRunning;
+  {
+    std::lock_guard<std::mutex> guard(rateLock);
+    rateRunning = rateWorkerRunning;
+  }
+  const weatherkit_current::ParsedStatus parsed = weatherkit_current::lastParsed();
+  char parsedAge[12];
+  if (parsed.group == weatherkit_current::Group::None) {
+    snprintf(parsedAge, sizeof(parsedAge), "-");
+  } else {
+    snprintf(parsedAge, sizeof(parsedAge), "%lu",
+             static_cast<unsigned long>((now - parsed.at) / 1000));
+  }
+  Serial.printf("Heap: new low min=%lu free=%lu largest=%lu up_s=%lu https=%s "
+                "aio_rate=%s queue=%u log_wait=%u inflight_id=%d mqtt=%s "
+                "wk_last=%s wk_age_s=%s\n",
+                static_cast<unsigned long>(low),
+                static_cast<unsigned long>(ESP.getFreeHeap()),
+                static_cast<unsigned long>(ESP.getMaxAllocHeap()),
+                static_cast<unsigned long>(now / 1000), https_gate::owner(),
+                rateRunning ? "busy" : "idle",
+                static_cast<unsigned>(pending.size()),
+                static_cast<unsigned>(pendingLogs.size()), outstandingMessageId,
+                mqttConnected.load() ? "up" : "down", parsed.name, parsedAge);
+}
+
 void recordDisconnected(uint32_t now) {
   std::lock_guard<std::mutex> guard(diagnosticLock);
   if (mqttDiagnostics.connected) {
@@ -521,6 +561,11 @@ bool startClient() {
   config.buffer_size = 4096;
   config.task_stack = 8192;
   config.reconnect_timeout_ms = 15000;
+  // esp-mqtt otherwise re-sends an unacknowledged QoS 1 publish every second.
+  // Adafruit IO counts each copy against the rate limit and stores it as a
+  // duplicate, so slow acknowledgements snowball into throttling. Recovery is
+  // left to the 30-second acknowledgement timeout and client reset.
+  config.message_retransmit_timeout = kPublishTimeoutMs * 2;
 
   client = esp_mqtt_client_init(&config);
   if (!client) {
@@ -887,6 +932,7 @@ void update(bool wifiConnected, bool timeSynchronized, uint32_t now) {
     Serial.println("AIO ERROR: Adafruit IO reported publish throttling; new publishes paused for 60 seconds");
   }
   updateRate(wifiConnected && timeSynchronized, now);
+  logHeapLow(now);
 
   const int ackId = acknowledgedMessageId.exchange(0);
   if (ackId != 0 && ackId != outstandingMessageId) {

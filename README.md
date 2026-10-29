@@ -105,7 +105,11 @@ acknowledgement arrives within 30 seconds, the application stops and destroys
 the client (clearing its old outbox) before reconnecting and retrying the
 uncompleted sample. QoS 1 is at-least-once delivery, not exactly-once: if the
 broker stored a value but its acknowledgement was lost, retrying can create a
-duplicate data point. Group success means every newly queued changed sample
+duplicate data point. The client's built-in in-session retransmission (default
+every 1 second without an acknowledgement) is pushed out to 60 seconds, beyond
+the 30-second application timeout, so slow broker acknowledgements do not
+create repeated data points that count against the Adafruit IO rate limit.
+Group success means every newly queued changed sample
 received a broker acknowledgement, not that the group was atomic or that Adafruit IO performed
 application-level validation. Account error/throttle notices are reported on
 serial. Throttle notices also pause new application publishes for 60 seconds
@@ -398,6 +402,22 @@ It includes:
   output mappings are disabled.
 - Wi-Fi state, RSSI in dBm, free heap, and minimum free heap in bytes.
 
+Serial also prints a `Heap: new low` line (not sent to Adafruit IO) when the
+minimum free heap first falls below 40,000 bytes and then each time it falls
+at least another 256 bytes. It is checked once per publisher loop, so the
+context is captured within one loop of the new low:
+
+```text
+Heap: new low min=2432 free=18568 largest=9204 up_s=2410 https=OpenWeather aio_rate=idle queue=12 log_wait=0 inflight_id=0 mqtt=up wk_last=WeatherKit hour2 wk_age_s=0
+```
+
+`min`, `free`, and `largest` are the low-water mark, current free heap, and
+largest allocatable block. `https` is the REST source holding the shared HTTPS
+slot (`-` if none), `aio_rate` shows whether the Adafruit IO rate-check HTTPS
+worker is running, `queue`/`log_wait`/`inflight_id` match the snapshot fields,
+and `wk_last`/`wk_age_s` give the most recently parsed WeatherKit group and its
+age in seconds.
+
 Snapshots share the existing two-second publish pacing and QoS 1 acknowledgement
 path; they do not generate feed-group completion logs or enter the change cache.
 One diagnostic can occupy the publish queue, plus one latest snapshot waiting
@@ -663,7 +683,14 @@ skipped individually; valid zeroes are published. Queue-deferred snapshots are
 retained and retried as for OpenWeather. Check pixel 4, serial `WeatherAPI:`
 logs, and `aggregator.log` for
 `Sent feed group WeatherAPI current - Number Updated: N` after upload.
-Host tests and the firmware build pass; board validation is pending.
+Host tests and the firmware build pass. On 2026-10-28, with the legacy WAPI
+feeder turned off, the board ran about 75 minutes: pixel 4 turned green;
+WeatherAPI published 16 feeds at startup, then 1, 10, and 1 on later polls;
+there were no request errors, publish timeouts, throttling, MQTT disconnects,
+or new duplicate reports. Minimum free heap reached 2,432 bytes within the
+first hour (versus 4,916 bytes over the earlier OpenWeather-only run), so
+heap headroom is still being monitored; see the `Heap: new low` serial line
+under soak-test diagnostics.
 
 ### WeatherKit minute forecasts (m5 and m30)
 

@@ -50,6 +50,7 @@ struct esp_mqtt_client_config_t {
   int buffer_size;
   int task_stack;
   int reconnect_timeout_ms;
+  int message_retransmit_timeout;
 };
 
 typedef void (*TestMqttCallback)(void*, esp_event_base_t, int32_t, void*);

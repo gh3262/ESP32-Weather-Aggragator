@@ -191,6 +191,7 @@ const char* esp_err_to_name(esp_err_t) { return "test error"; }
 esp_mqtt_client_handle_t esp_mqtt_client_init(const esp_mqtt_client_config_t* config) {
   assert(std::string(config->uri) == "mqtts://io.adafruit.com:8883");
   assert(config->cert_pem && config->cert_pem[0]);
+  assert(config->message_retransmit_timeout > static_cast<int>(aio_publisher::kPublishTimeoutMs));
   return &fakeClient;
 }
 esp_err_t esp_mqtt_client_register_event(esp_mqtt_client_handle_t,
@@ -1377,6 +1378,34 @@ int main() {
   assert(sent.size() == 2);
   tick(UINT32_MAX - 1000 + kDiagnosticIntervalMs);
   assert(sent.back().value.find(" periodic ") != std::string::npos);
+
+  // Heap lows log only below 40 KB and after a further 256-byte drop.
+  reset();
+  Serial.output.clear();
+  ESP.minFreeHeap = 40000;
+  tick(1000);
+  assert(Serial.output.find("Heap: new low") == std::string::npos);
+  ESP.minFreeHeap = 30000;
+  ESP.freeHeap = 45000;
+  ESP.maxAllocHeap = 20000;
+  https_gate::tryAcquire("OpenWeather");
+  tick(5000);
+  assert(Serial.output.find(
+      "Heap: new low min=30000 free=45000 largest=20000 up_s=5 https=OpenWeather "
+      "aio_rate=") != std::string::npos);
+  assert(Serial.output.find(" mqtt=up wk_last=") != std::string::npos);
+  https_gate::release();
+  Serial.output.clear();
+  ESP.minFreeHeap = 29745;
+  tick(6000);
+  assert(Serial.output.find("Heap: new low") == std::string::npos);
+  ESP.minFreeHeap = 29744;
+  tick(7000);
+  assert(Serial.output.find("Heap: new low min=29744") != std::string::npos);
+  assert(Serial.output.find("https=-") != std::string::npos);
+  ESP.minFreeHeap = 180000;
+  ESP.freeHeap = 200000;
+  ESP.maxAllocHeap = 110000;
 
   puts("AIO publisher tests passed.");
 }

@@ -38,8 +38,12 @@ extern TestSerial Serial;
 extern uint32_t testMillis;
 inline uint32_t millis() { return testMillis; }
 struct TestEsp {
-  uint32_t getFreeHeap() const { return 200000; }
-  uint32_t getMinFreeHeap() const { return 180000; }
+  uint32_t freeHeap = 200000;
+  uint32_t minFreeHeap = 180000;
+  uint32_t maxAllocHeap = 110000;
+  uint32_t getFreeHeap() const { return freeHeap; }
+  uint32_t getMinFreeHeap() const { return minFreeHeap; }
+  uint32_t getMaxAllocHeap() const { return maxAllocHeap; }
 };
 extern TestEsp ESP;
 

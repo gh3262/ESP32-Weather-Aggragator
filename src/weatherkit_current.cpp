@@ -113,6 +113,8 @@ uint32_t rawOverflow = 0;
 uint32_t assemblyFailures = 0;
 uint32_t invalidPayloads = 0;
 uint32_t changeOverflow = 0;
+Group lastParsedGroup = Group::None;
+uint32_t lastParsedAt = 0;
 uint32_t lastRetryAt = 0;
 bool retryPending = false;
 std::vector<Sample> waitingSamples;
@@ -365,6 +367,8 @@ void update(uint32_t now) {
         ++discardedTotal;
         break;
       }
+      lastParsedGroup = snapshot.group;
+      lastParsedAt = now;
       if (!snapshot.samples.empty()) {
         source.received = true;
         source.lastReceivedAt = snapshot.receivedAt;
@@ -481,5 +485,11 @@ uint32_t discardedMessages() {
 DiscardStatus discardStatus() {
   std::lock_guard<std::mutex> guard(receiveLock);
   return {assemblyFailures, rawOverflow, invalidPayloads, changeOverflow};
+}
+
+ParsedStatus lastParsed() {
+  return {lastParsedGroup,
+          lastParsedGroup == Group::None ? "-" : groupName(lastParsedGroup),
+          lastParsedAt};
 }
 }

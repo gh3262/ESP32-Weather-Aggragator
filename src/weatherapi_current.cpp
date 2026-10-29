@@ -461,7 +461,7 @@ void update(bool wifiConnected, bool timeSynchronized, uint32_t now) {
       return;
     }
     // Another REST worker owns the TLS slot; try again on a later loop.
-    if (!https_gate::tryAcquire()) {
+    if (!https_gate::tryAcquire("WeatherAPI")) {
       return;
     }
     workerRunning = true;

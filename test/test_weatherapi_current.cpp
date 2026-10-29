@@ -235,22 +235,24 @@ int main() {
   // A busy shared HTTPS slot defers the poll without counting an attempt.
   reset();
   begin();
-  assert(https_gate::tryAcquire());
+  assert(https_gate::tryAcquire("test"));
   update(true, true, 0);
   assert(!testTask && !attempted);
   https_gate::release();
   update(true, true, 5);
   assert(testTask && attempted);
-  assert(!https_gate::tryAcquire());
+  assert(std::string(https_gate::owner()) == "WeatherAPI");
+  assert(!https_gate::tryAcquire("test"));
   testTask(nullptr);
-  assert(https_gate::tryAcquire());
+  assert(std::string(https_gate::owner()) == "-");
+  assert(https_gate::tryAcquire("test"));
   https_gate::release();
 
   reset();
   begin();
   testTaskFailure = true;
   update(true, true, 0);
-  assert(failedRequests == 1 && https_gate::tryAcquire());
+  assert(failedRequests == 1 && https_gate::tryAcquire("test"));
   https_gate::release();
 
   reset();

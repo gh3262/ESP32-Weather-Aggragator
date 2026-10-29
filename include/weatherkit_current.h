@@ -33,6 +33,14 @@ struct DiscardStatus {
 };
 DiscardStatus discardStatus();
 
+// Main-loop only: most recent group parsed successfully (Group::None if none).
+struct ParsedStatus {
+  Group group;
+  const char* name;
+  uint32_t at;
+};
+ParsedStatus lastParsed();
+
 }
 
 #endif
