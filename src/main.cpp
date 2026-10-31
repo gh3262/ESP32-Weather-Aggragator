@@ -12,6 +12,7 @@
 #include "openweather_current.h"
 #include "nws_alerts.h"
 #include "weatherapi_current.h"
+#include "openmeteo_current.h"
 #include "wifi_retry.h"
 
 #if __has_include("credentials.h")
@@ -88,7 +89,7 @@ void updateStatusPixels(uint32_t now) {
   const HealthStatus states[] = {
       wifiHealth, aio_publisher::health(now), aio_publisher::weatherHealth(now),
       openweather_current::health(now), weatherapi_current::health(now),
-      nws_alerts::health(now)};
+      nws_alerts::health(now), openmeteo_current::health(now)};
   constexpr uint16_t kStatusPixelCount = sizeof(states) / sizeof(states[0]);
   static bool initialized[kStatusPixelCount] = {};
   static HealthStatus previous[kStatusPixelCount] = {};
@@ -491,6 +492,7 @@ void setup() {
   openweather_current::begin();
   weatherapi_current::begin();
   nws_alerts::begin();
+  openmeteo_current::begin();
   if (kEnableStatusPixels) {
     pixelsReady = status_pixels::begin();
   } else {
@@ -549,6 +551,8 @@ void loop() {
                              timeSynchronized, now);
   nws_alerts::update(networkState == NetworkState::Online,
                      timeSynchronized, now);
+  openmeteo_current::update(networkState == NetworkState::Online,
+                            timeSynchronized, now);
   runConnectivityWatchdog(now);
   updateStatusPixels(now);
   if (refreshNeeded || now - lastRefreshAt >= kRefreshMs) {

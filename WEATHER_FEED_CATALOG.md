@@ -378,6 +378,14 @@ There is no separate current weather-code, numeric wind-direction, or day/night
 feed. Those values are used for description or combined text.
 `OM` gives the current summary a friendlier date format than `Open_Meteo`.
 
+The ESP32 now implements only the current group at a 20-minute interval,
+using the same destinations above except `om-pres-trend`, which is deliberately
+not calculated or published. It uses verified HTTPS and the shared change-filtered
+publisher; `om-when` retains the API local timestamp without the legacy fixed
+offset adjustment. Historical destinations below remain on the old board.
+Disable its current-feed writes before enabling the ESP32 provider to avoid
+overlapping writers. See [current integration details](README.md#open-meteo-current-conditions).
+
 ### 3.3 Shared historical destinations
 
 On each historical refresh, each previous day is processed oldest to newest.

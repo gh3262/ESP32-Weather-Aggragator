@@ -52,20 +52,23 @@ PlatformIO/Arduino firmware for a Seeed Studio XIAO ESP32-S3 with an Adafruit
   status: amber while scanning/connecting, green when connected, and red when
   unconfigured, initialization fails, or waiting to reconnect. Additional
   pixels show AIO publishing health (1), WeatherKit reception health (2),
-  OpenWeather polling health (3), WeatherAPI polling health (4), and NWS Alerts
-  polling health (5). Pixel 7 pulses red for warnings, amber for watches, or
-  blue for statements/advisories; pixel 6 remains off. Brightness is limited to 16 out of
+  OpenWeather polling health (3), WeatherAPI polling health (4), NWS Alerts
+  polling health (5), and Open-Meteo polling health (6).
+  Pixel 7 pulses red for warnings, amber for watches, or
+  blue for statements/advisories. Brightness is limited to 16 out of
   255 in software.
   Enabled using `kEnableStatusPixels = true`; set it to `false` to isolate
   pixel initialization and updates during Wi-Fi diagnostics.
 
 The main firmware receives WeatherKit current conditions, 5-/30-minute
 forecasts, hour-1/hour-2/hour-6/hour-12/hour-24 forecasts, and day-1/day-2/day-5 forecasts
-through Adafruit IO MQTT, and polls OpenWeather current conditions directly over
-verified HTTPS. Changed values from both providers use the shared paced queue.
+through Adafruit IO MQTT, and polls OpenWeather, WeatherAPI, Open-Meteo current
+conditions, and NWS active alerts over verified HTTPS.
+Changed values from all providers use the shared paced queue.
 All 11 WeatherKit source groups are implemented, with 299 configured outputs;
 OpenWeather current conditions adds 21 weather outputs and the shared `rt`
-status. Other providers are not implemented yet.
+status. WeatherAPI adds 16 outputs, NWS Alerts adds four, and Open-Meteo
+current conditions adds 15. Open-Meteo past daily data remains on the legacy board.
 [The feed catalog](WEATHER_FEED_CATALOG.md) is the migration reference; its
 [CSV companion](WEATHER_FEED_CATALOG.csv) inventories the legacy source outputs.
 
@@ -661,7 +664,7 @@ and worker-task pattern as OpenWeather. Failed requests retry after 60
 seconds. The API key is never printed. A live response with air quality was
 about 1 KB on 2026-10-28.
 
-The OpenWeather, WeatherAPI, and NWS Alerts workers and the Adafruit IO
+The OpenWeather, WeatherAPI, Open-Meteo, and NWS Alerts workers and the Adafruit IO
 account rate check share a single HTTPS slot, so only one REST TLS session runs
 beside the MQTT connection at a time. A poll that finds the slot busy waits
 for a later loop without counting as an attempt. This bounds the extra heap
@@ -701,6 +704,54 @@ overnight run (2026-10-28/29) had a minimum free heap of 54,440 bytes (reached
 in the first hour, then flat), no `Heap: new low` lines, no publish timeouts,
 throttling, REST request errors, or new duplicates, and recovered
 automatically from one Wi-Fi drop.
+
+### Open-Meteo current conditions
+
+The firmware requests the Open-Meteo
+[`/v1/forecast`](https://open-meteo.com/en/docs) endpoint over verified HTTPS
+every **20 minutes**, alongside OpenWeather's 30-minute and WeatherAPI's
+25-minute schedules. It uses `LATITUDE` and `LONGITUDE`; no API key is needed
+for the free non-commercial endpoint. Requests include only the 14 required
+`current` fields, `timezone=auto`, Fahrenheit, mph, and inch precipitation.
+No `daily` or `past_days` parameters are requested. The API returns
+model-derived current conditions, not direct station observations.
+Current precipitation represents the response's `current.interval` period
+(900 seconds in the live validation response), not daily totals.
+
+The worker reuses the shared HTTPS gate and Let's Encrypt trust anchors,
+with 4-second connect/read timeouts, a 5-second handshake timeout, an 8 KB
+worker stack, a 4 KB response cap, and 60-second failure retries. A public
+current-only request on 2026-10-31 returned about 1 KB, with snowfall in
+`inch`, wind in `mp/h`, and pressure in `hPa`; its certificate issuer was
+Let's Encrypt YR1. Current time, interval, numeric ranges, and all returned
+units are validated before accepting a snapshot. A missing/invalid field or
+unexpected unit rejects the snapshot with an explicit error, retaining
+previous feed values. Valid precipitation zeroes are explicitly published
+so wet-to-dry transitions do not require a restart.
+
+Group `Open-Meteo current` uses the existing feeds:
+`om-when`, `om-winds`, `om-windspeed`, `om-windgust`, `om-totprec`,
+`om-rain`, `om-showers`, `om-snow`, `om-hum`, `om-clouds`, `om-current`,
+`om-temp`, `om-fl`, `om-pres`, and `om-desc`.
+Scalar numbers use the same six-significant-digit formatting as WeatherAPI.
+Wind strings preserve the legacy full cardinal names and intermediate
+compass abbreviations. Summaries retain the API's local ISO timestamp and
+units; there is no fixed UTC offset adjustment, including across daylight
+saving changes. WMO descriptions retain the legacy wording for supported
+codes, with code 99 (heavy-hail thunderstorms) added; unknown codes log and
+skip `om-desc`/`om-current` while publishing the other 13 outputs.
+No pressure trend (`om-pres-trend`), `rt`, or location/time metadata is sent.
+
+All samples use the existing change filter and atomic group queue; unchanged
+snapshots still refresh polling health, and queue-deferred snapshots are
+retained for two-second retries. Pixel **6** reports health with a 40-minute
+staleness window (two polls), amber after one or two failed requests, and red
+after three. Check serial `Open-Meteo:` messages and
+`Sent feed group Open-Meteo current - Number Updated: N` in `aggregator.log`.
+
+Before uploading, disable only current-feed writes on the old Open-Meteo
+board. Keep its past-day writes running: all `omp-*`, `ompast.*`, and `om-past`
+feeds and their dated historical metadata are outside this migration.
 
 ### NWS active alerts
 
@@ -1159,8 +1210,7 @@ The helper assumes eight standard 800 kHz GRB RGB pixels, not RGBW.
 color components are 0-255 before global brightness scaling. `setPixel` updates
 only the selected pixel and sends the ring buffer immediately; `clear` turns
 the whole ring off. Initialization and invalid-index errors are logged to USB
-serial. The main loop owns pixels 0-5 and the alert indicator at 7; pixel 6
-is reserved for a future indicator.
+serial. The main loop owns health pixels 0-6 and the alert indicator at 7.
 These calls should remain on the main loop task, not interrupt handlers.
 
 | Position (index) | Purpose | Green | Amber | Red |
@@ -1171,6 +1221,7 @@ These calls should remain on the main loop task, not interrupt handlers.
 | Fourth (3) | OpenWeather polling | Latest successful poll was accepted by the shared publisher within 60 minutes, including while the next request runs or a snapshot waits briefly for queue space | Waiting for first accepted poll, retrying after 1-2 failed requests, or a snapshot has waited 10 minutes for queue space | Three consecutive failed requests, no accepted poll for 60 minutes, or a snapshot has waited 60 minutes for queue space |
 | Fifth (4) | WeatherAPI polling | Same rule as OpenWeather, with a 50-minute window (two 25-minute polls) | Waiting for first accepted poll, retrying after 1-2 failed requests, or a snapshot has waited 10 minutes for queue space | Three consecutive failed requests, no accepted poll for 50 minutes, or a snapshot has waited 50 minutes for queue space |
 | Sixth (5) | NWS Alerts polling | Latest successful poll was accepted by the shared publisher within 10 minutes, including while the next request runs or a snapshot waits briefly for queue space | Waiting for first accepted poll, retrying after 1-2 failed requests, or a snapshot has waited 2 minutes for queue space | Three consecutive failed requests, no accepted poll for 10 minutes, or a snapshot has waited 10 minutes for queue space |
+| Seventh (6) | Open-Meteo polling | Same rule as OpenWeather, with a 40-minute window (two 20-minute polls) | Waiting for first accepted poll, retrying after 1-2 failed requests, or a snapshot has waited 10 minutes for queue space | Three consecutive failed requests, no accepted poll for 40 minutes, or a snapshot has waited 40 minutes for queue space |
 
 Pixel 7 does not use this health table: off means no known active alerts,
 and pulsing red/amber/blue means warning/watch/statement-or-advisory.
@@ -1185,8 +1236,8 @@ Before the first MQTT connection, pixel 2 is amber for 30 seconds, then red;
 its initial-data grace period is 5 minutes from the first connection.
 Pixel 1's timeout/failure indication clears after a successful acknowledgement;
 an idle queue does not become unhealthy simply because nothing changed.
-Pixels 3-5 count an unchanged snapshot as accepted. Broker delivery of accepted
-OpenWeather, WeatherAPI, and NWS Alerts samples is reported by pixel 1.
+Pixels 3-6 count an unchanged snapshot as accepted. Broker delivery of accepted
+OpenWeather, WeatherAPI, Open-Meteo, and NWS Alerts samples is reported by pixel 1.
 
 The EYESPI BFF's optional IRQ line also uses D0; the current non-touch display
 does not need it. D4/SDA and D5/SCL remain reserved for the STEMMA QT connector.
@@ -1324,6 +1375,22 @@ They verify all 16 feed mappings, the legacy condition lookup, compass
 abbreviations, numeric formatting, invalid-field skipping, the absence of
 `rt` and metadata, the 25-minute schedule and retries, health transitions,
 the shared HTTPS slot, oversize responses, and timer wraparound.
+
+[Open-Meteo tests](test/test_openmeteo_current.cpp) use a dedicated fake HTTPS
+client and test-only coordinates:
+
+```powershell
+& "$env:USERPROFILE\.platformio\penv\Scripts\python.exe" -m ziglang c++ -std=c++11 -Wall -Wextra -Werror -pedantic -Itest\openmeteo_support -Itest\support -Iinclude "-I.pio\libdeps\seeed_xiao_esp32s3\ArduinoJson\src" test\test_openmeteo_current.cpp -o .pio\host-tests\openmeteo_current.exe
+if ($LASTEXITCODE -eq 0) { & .\.pio\host-tests\openmeteo_current.exe }
+```
+
+They cover all 15 feed mappings, bounded summary length, WMO descriptions,
+imperial units (including snowfall), wet-to-dry zeroes, local timestamps
+across DST, absence of pressure trend/history/metadata, unchanged snapshot
+stability, invalid-response retention, the exact current-only URL,
+20-minute scheduling, queue retries, health transitions, HTTPS gate
+contention, worker/transport failures, oversize responses, and timer wraparound.
+Host tests do not verify hardware TLS or live MQTT delivery.
 
 [NWS Alerts tests](test/test_nws_alerts.cpp) use a dedicated fake HTTPS client
 and test-only coordinates, not local credentials or the network:
