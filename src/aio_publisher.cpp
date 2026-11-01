@@ -35,7 +35,7 @@
 
 namespace aio_publisher {
 namespace {
-constexpr uint32_t kPublishIntervalMs = 2000;
+constexpr uint32_t kPublishIntervalMs = 1500;
 constexpr uint32_t kPublishTimeoutMs = 30000;
 constexpr uint32_t kMqttStartRetryMs = 15000;
 constexpr uint32_t kRatePollMs = 60000;

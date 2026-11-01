@@ -196,6 +196,19 @@ bool validTime(const char* text) {
   return day >= 1 && day <= days[month - 1] + (month == 2 && leap ? 1 : 0);
 }
 
+std::string friendlyTime(const char* timestamp) {
+  static const char* const months[] = {
+      "January", "February", "March", "April", "May", "June",
+      "July", "August", "September", "October", "November", "December"};
+  const int hour = atoi(timestamp + 11);
+  char buffer[64];
+  snprintf(buffer, sizeof(buffer), "On %d %s at %d:%02d %s",
+           atoi(timestamp + 8), months[atoi(timestamp + 5) - 1],
+           hour % 12 == 0 ? 12 : hour % 12, atoi(timestamp + 14),
+           hour < 12 ? "am" : "pm");
+  return buffer;
+}
+
 const char* conditionText(unsigned code) {
   for (const ConditionText& entry : kConditions) {
     if (entry.code == code) {
@@ -269,7 +282,7 @@ bool parseResponse(const std::string& body, std::vector<Sample>& samples) {
         "Total Precip " + text[Precip] + "inches Rain: " + text[Rain] +
         "inches Showers: " + text[Showers] + "inches Snow: " + text[Snow] + "inches.";
     const std::string summary =
-        std::string("At ") + timestamp + ", " +
+        friendlyTime(timestamp) + ", " +
         (values[IsDay] == 1 ? "Daytime" : "Nighttime") + ",  it is " +
         description + ",  Temp " + text[Temp] + "\xC2\xB0" "F, Humidity " +
         text[Humidity] + "%,  Feels Like " + text[FeelsLike] + "\xC2\xB0" "F, " +

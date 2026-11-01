@@ -93,7 +93,7 @@ WeatherKit validation status (2026-10-28):
 The application starts its TLS-verified MQTT connection after Wi-Fi and NTP are
 ready. Feed samples are submitted in named groups; the queue publishes one
 sample at a time, waits for its QoS 1 acknowledgement, and spaces publish
-attempts by at least two seconds. This caps new application publishes at 30
+attempts by at least 1.5 seconds. This caps new application publishes at 40
 per minute, including entries sent to `aggregator.log` and `aggregator.diag`.
 Other publishers share the account quota, so this is not a guarantee against
 account throttling. MQTT's QoS 1 retransmissions can repeat a publish while
@@ -120,7 +120,7 @@ serial. Throttle notices also pause new application publishes for 60 seconds
 from the latest notice. All queued weather changes, logs, and diagnostics remain
 queued, and matching ACKs still advance the queue during the pause. This does
 not cancel an in-flight MQTT-owned message or its internal retransmissions.
-After cooldown, normal two-second pacing resumes; further notices extend the
+After cooldown, normal 1.5-second pacing resumes; further notices extend the
 pause. The AIO pixel stays amber during cooldown unless a red condition applies.
 
 ### Account rate monitoring and publish tracing
@@ -422,7 +422,7 @@ worker is running, `queue`/`log_wait`/`inflight_id` match the snapshot fields,
 and `wk_last`/`wk_age_s` give the most recently parsed WeatherKit group and its
 age in seconds.
 
-Snapshots share the existing two-second publish pacing and QoS 1 acknowledgement
+Snapshots share the existing 1.5-second publish pacing and QoS 1 acknowledgement
 path; they do not generate feed-group completion logs or enter the change cache.
 One diagnostic can occupy the publish queue, plus one latest snapshot waiting
 outside it. New snapshots replace older unsent diagnostics, never an in-flight
@@ -442,7 +442,7 @@ visibility after a recoverable outage, but cannot preserve unsent information
 through power loss. For board validation, check one startup summary arrives,
 compare its timestamp/uptime and source ages with serial, then verify a recovery
 snapshot after a reconnect and a periodic snapshot after 30 minutes. Diagnostic
-publishes must remain at least two seconds apart from other new publishes.
+publishes must remain at least 1.5 seconds apart from other new publishes.
 
 ### Change detection
 
@@ -487,7 +487,7 @@ publisher-test:1:A
 ```
 
 The duplicate A is suppressed, while the return from B to A is preserved.
-Verify the entries' timestamps are at least two seconds apart (other queued
+Verify the TX uptime timestamps are at least 1,500 milliseconds apart (other queued
 traffic may increase the gap), then check `aggregator.log` for
 `Sent feed group publisher-test - Number Updated: 3`.
 Acceptance on serial means queued, not yet
@@ -735,8 +735,9 @@ Group `Open-Meteo current` uses the existing feeds:
 `om-temp`, `om-fl`, `om-pres`, and `om-desc`.
 Scalar numbers use the same six-significant-digit formatting as WeatherAPI.
 Wind strings preserve the legacy full cardinal names and intermediate
-compass abbreviations. Summaries retain the API's local ISO timestamp and
-units; there is no fixed UTC offset adjustment, including across daylight
+compass abbreviations. `om-current` formats the API's local time as
+`On 31 October at 5:45 pm`; `om-when` retains the local ISO timestamp.
+Summaries retain the API units; there is no fixed UTC offset adjustment, including across daylight
 saving changes. WMO descriptions retain the legacy wording for supported
 codes, with code 99 (heavy-hail thunderstorms) added; unknown codes log and
 skip `om-desc`/`om-current` while publishing the other 13 outputs.
@@ -801,7 +802,7 @@ The same MQTT connection subscribes to `forecast_minutes_5` and
 `forecast_minutes_30` under the configured integration location, on every
 connection. These are forecast horizons, not polling intervals. Both use the
 shared receiver/parser in [weatherkit_current.cpp](src/weatherkit_current.cpp)
-and the same FIFO change filter, two-second pacing, and bounded receive queue
+and the same FIFO change filter, 1.5-second pacing, and bounded receive queue
 as current conditions. Failed subscription enqueues retry independently every
 15 seconds while connected.
 
@@ -824,7 +825,7 @@ logs. Completed changed groups produce local-time-prefixed entries such as:
 After uploading the main environment, wait for the next MQTT push and look for
 `WeatherKit m5: parsed 3 valid feed samples` and the equivalent m30 message.
 Verify the six existing minute feeds and both completion logs. A startup burst
-of all 26 current/minute values needs roughly 52 seconds, plus logs, to drain;
+of all 26 current/minute values needs roughly 39 seconds, plus logs, to drain;
 arrival order determines which group publishes first. With hours 1, 2, 6, 12, and 24
 and days 1, 2, and 5 also enabled, the startup burst is 299 values, roughly
 598 seconds plus logs. This exceeds the
@@ -944,7 +945,7 @@ Daily adapters are not chained together.
 The entire day-1 payload is one source group, not three independent MQTT topics.
 Its up to 56 changed outputs fit atomically in the existing 64-entry publish
 queue; the adapter retains the group until enough space opens. It shares the
-same FIFO, change filter, two-second pacing, and counted completion log.
+same FIFO, change filter, 1.5-second pacing, and counted completion log.
 Usable day-1 data participates in the WeatherKit pixel and appears as
 `forecast_days_1` in `aggregator.diag`.
 
@@ -977,7 +978,7 @@ creation remains external; all 56 existing destination feeds must be available.
 Allow about eleven minutes plus source-arrival time, throttling, and connection
 delays for the complete startup across eleven groups. All three daily groups may wait
 for near-empty queue capacity; queue-full retained retries are expected.
-The shared two-second pacing and account-rate cooldown policy are unchanged.
+The shared 1.5-second pacing and account-rate cooldown policy apply.
 Watch remaining account headroom and receive-discard counters during this
 controlled load increase; the application cap does not reserve account quota.
 
@@ -1172,7 +1173,7 @@ counts, RSSI, current/minimum heap, and per-topic message/change/retained counts
 maximum payload bytes, average interval seconds, and seconds since last receipt.
 Topic labels are `cur`, `min5`/`min30`, `hr1`/`hr2`/`hr6`/`hr24`, and
 `day1`/`day2`/`day5`. Detailed field changes and full payloads remain serial-only.
-Summary publishes use QoS 1 and are paced at least two seconds apart; serial
+Summary publishes use QoS 1 and are paced at least 1.5 seconds apart; serial
 reports enqueue failures and MQTT acknowledgements. If disconnected, the latest
 unsent snapshot waits for reconnection; a newer snapshot replaces it with an
 explicit serial notice. RAM-only pending data is lost on reset, but entries
@@ -1328,7 +1329,7 @@ accessing the network or using real account credentials:
 if ($LASTEXITCODE -eq 0) { & .\.pio\host-tests\aio_publisher.exe }
 ```
 
-They check the two-second boundary, rolling 60-second windows shared by weather
+They check the 1.5-second boundary and 40-publish rolling 60-second limit shared by weather
 and logs, group completion only after acknowledgements, unrelated message IDs,
 reconnect ownership, timeout recovery and cleanup failures, enqueue failures,
 atomic rejection of invalid/full groups, network/time startup gating, and

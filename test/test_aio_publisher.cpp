@@ -407,28 +407,42 @@ int main() {
   assert(subscribedTopics[12] ==
          "test-user/integration/weather/test-location/forecast_days_5");
   assert(enqueueGroup("current", samples, 2));
-  tick(1999);
+  tick(1499);
   assert(sent.empty());
-  tick(2000);
+  tick(1500);
   assert(sent.size() == 1 && sent.back().topic == "test-user/feeds/aggregator.log");
   acknowledge();
-  tick(2001);
-  tick(3999);
+  tick(1501);
+  tick(2999);
   assert(sent.size() == 1);
-  tick(4000);
+  tick(3000);
   assert(sent.size() == 2 && sent.back().value == "72");
   event(MQTT_EVENT_PUBLISHED, sent.back().id + 100);
-  tick(4001);
+  tick(3001);
   assert(outstandingMessageId == sent.back().id);
   acknowledge();
-  tick(4002);
-  tick(6000);
+  tick(3002);
+  tick(4500);
   assert(sent.size() == 3 && sent.back().value == "5");
   acknowledge();
-  tick(6001);
-  tick(8000);
+  tick(4501);
+  tick(6000);
   assert(sent.size() == 4 && sent.back().value ==
          "20261024110442 Sent feed group current - Number Updated: 2");
+
+  reset();
+  assert(kPublishIntervalMs == 1500);
+  tick(1499);
+  assert(sent.empty());
+  tick(1500);
+  assert(sent.size() == 1);
+  acknowledge();
+  const FeedSample paced[] = {{"weather.paced", "1"}};
+  assert(enqueueGroup("paced", paced, 1));
+  tick(2999);
+  assert(sent.size() == 1);
+  tick(3000);
+  assert(sent.size() == 2);
 
   reset();
   FeedSample burst[60];
@@ -445,17 +459,19 @@ int main() {
       acknowledge();
     }
   }
-  assert(sent.size() == 60);
+  assert(sent.size() == 62);  // Startup log, 60 feeds, and completion log.
+  assert(sent.back().topic == "test-user/feeds/aggregator.log");
   for (size_t i = 1; i < sent.size(); ++i) {
-    assert(sent[i].at - sent[i - 1].at >= 2000);
+    assert(sent[i].at - sent[i - 1].at >= kPublishIntervalMs);
     size_t inWindow = 0;
     for (const auto& publication : sent) {
       if (publication.at <= sent[i].at && sent[i].at - publication.at < 60000) {
         ++inWindow;
       }
     }
-    assert(inWindow <= 30);
+    assert(inWindow <= 40);
   }
+  assert(sent[39].at - sent[0].at == 39 * kPublishIntervalMs);
 
   reset();
   tick(2000);
@@ -504,9 +520,9 @@ int main() {
   tick(2000);
   assert(sent.empty() && pending.size() == 1);
   rejectPublish = false;
-  tick(3999);
+  tick(3499);
   assert(sent.empty());
-  tick(4000);
+  tick(3500);
   assert(sent.size() == 1);
 
   reset();
@@ -529,9 +545,9 @@ int main() {
   acknowledge();
   tick(UINT32_MAX - 999);
   queueLog("wraparound");
-  tick(998);
+  tick(498);
   assert(sent.size() == 1);
-  tick(999);
+  tick(499);
   assert(sent.size() == 2);
 
   reset();
@@ -1056,7 +1072,7 @@ int main() {
     assert(feed.second == 1);
   }
   for (size_t i = 1; i < sent.size(); ++i) {
-    assert(sent[i].at - sent[i - 1].at >= 2000);
+    assert(sent[i].at - sent[i - 1].at >= kPublishIntervalMs);
   }
   assert(weatherkit_current::waitingSamples.empty());
   assert(!weatherkit_current::retryPending);
@@ -1173,7 +1189,7 @@ int main() {
   assert(sent.size() == 2);
   assert(sent[1].topic == "test-user/feeds/aggregator.diag");
   assert(sent[1].value == startup);
-  assert(sent[1].at - sent[0].at >= 2000);
+  assert(sent[1].at - sent[0].at >= kPublishIntervalMs);
   assert(acknowledgedPublishes == 2);
   assert(publishedValues.empty());
   assert(Serial.output.find("aggregator.diag published") != std::string::npos);
@@ -1324,7 +1340,7 @@ int main() {
   }
   assert(deliveredDiagnostic);
   for (size_t i = 1; i < sent.size(); ++i) {
-    assert(sent[i].at - sent[i - 1].at >= 2000);
+    assert(sent[i].at - sent[i - 1].at >= kPublishIntervalMs);
   }
 
   reset();

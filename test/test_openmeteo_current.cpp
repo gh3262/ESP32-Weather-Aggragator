@@ -143,7 +143,7 @@ int main() {
   assert(value("om-pres") == "1021.4");
   assert(value("om-desc") == "Rain");
   assert(value("om-current") ==
-      "At 2026-10-31T17:45, Daytime,  it is Rain,  Temp 68.9\xC2\xB0" "F, Humidity 42%, "
+      "On 31 October at 5:45 pm, Daytime,  it is Rain,  Temp 68.9\xC2\xB0" "F, Humidity 42%, "
       " Feels Like 64.4\xC2\xB0" "F, Total Precip 0.15inches Rain: 0.1inches "
       "Showers: 0.05inches Snow: 0inches.,  Clouds 85%, Barometer 1021.4 hPa, "
       "Wind Speed 5.8mp/h, from the SE, gusting 8.4mp/h");
@@ -191,6 +191,7 @@ int main() {
   }
   assert(value("om-desc") == "Clear sky");
   assert(value("om-when") == "2026-11-01T01:15");
+  assert(value("om-current").find("On 1 November at 1:15 am, ") == 0);
   assert(value("om-current").find("Nighttime") != std::string::npos);
   assert(value("om-current").find("No precipitation") != std::string::npos);
   assert(value("om-winds").find("North") != std::string::npos);
@@ -318,6 +319,10 @@ int main() {
   assert(testHttpCalls == 2 && health(nearWrap + kPollIntervalMs + 1) ==
          HealthStatus::Green);
   assert(validTime("2028-02-29T12:00") && !validTime("2027-02-29T12:00"));
+  assert(friendlyTime("2026-01-01T00:05") == "On 1 January at 12:05 am");
+  assert(friendlyTime("2026-12-31T12:00") == "On 31 December at 12:00 pm");
+  assert(friendlyTime("2026-10-31T18:45") == "On 31 October at 6:45 pm");
+  assert(friendlyTime("2028-02-29T23:09") == "On 29 February at 11:09 pm");
   Serial.println("Open-Meteo current tests passed");
   std::puts("Open-Meteo current tests passed");
 }
