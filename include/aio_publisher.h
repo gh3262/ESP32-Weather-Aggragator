@@ -18,6 +18,8 @@ void update(bool wifiConnected, bool timeSynchronized, uint32_t now);
 // Main-loop only.
 HealthStatus health(uint32_t now);
 HealthStatus weatherHealth(uint32_t now);
+// Main-loop only; true after weather input, queued writes, and logs have drained.
+bool idle();
 // Main-loop only. Copies accepted samples; true also means an unchanged no-op.
 // False rejects the entire group without changing queue/cache state.
 bool enqueueGroup(const char* groupName, const FeedSample* samples,

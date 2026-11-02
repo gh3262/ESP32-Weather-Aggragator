@@ -578,6 +578,16 @@ value-only deduplication.
 
 ## 7. NWS forecasts
 
+The ESP32 migration publishes only the 14 period feeds, from one hourly
+forecast response. It discovers the URL from configured coordinates, refreshes
+the mapping daily, delays startup until the initial backlog has drained
+(at least 15 minutes), and uses the shared HTTPS gate/change-filtered publisher.
+`nws.when` and `rt` are not migrated. Narratives are capped individually at
+505 UTF-8 bytes including a marked truncation suffix; truncation is logged.
+Invalid snapshots are reported and rejected.
+The descriptions below document the original CircuitPython source.
+See [firmware integration](README.md#nws-forecasts).
+
 Source: [NWS Forecasts/code.py](circuitpython/NWS%20Forecasts/code.py).
 The source is a **hardcoded forecast gridpoint**:
 `https://api.weather.gov/gridpoints/MEG/54,68/forecast`.
@@ -656,6 +666,20 @@ The age calculation uses local RTC time and a fixed **+5-hour correction**;
 the diagnostic display separately subtracts six hours. Eligibility around DST
 transitions or with mismatched timestamps needs validation before migration.
 Negative calculated ages are not rejected by the current comparison.
+
+### ESP32 migration
+
+The ESP32 implements this output in
+[temperature_average.cpp](src/temperature_average.cpp), using the same four
+Fahrenheit input keys and a strict 30-minute local-receipt freshness cutoff.
+It consumes parsed provider samples directly, including unchanged temperatures,
+rather than reading back AIO history. It recalculates on source updates/expiry
+and submits only changed averages to the shared paced publisher, with
+six-significant-digit numeric formatting. If no inputs remain fresh, nothing
+is sent. No contributor-count/elevation metadata, extra health feed, or visual
+indicator is migrated. See [the README](README.md#average-current-temperature)
+for freshness details, queue retries, and cutover instructions. Disable the old
+Feed-Avg writer before deploying the ESP32 version.
 
 ## 9. Cross-project integration notes for the future ESP32
 

@@ -68,7 +68,9 @@ Changed values from all providers use the shared paced queue.
 All 11 WeatherKit source groups are implemented, with 299 configured outputs;
 OpenWeather current conditions adds 21 weather outputs and the shared `rt`
 status. WeatherAPI adds 16 outputs, NWS Alerts adds four, and Open-Meteo
-current conditions adds 15. Open-Meteo past daily data remains on the legacy board.
+current conditions adds 15. NWS forecasts adds 14 narrative outputs.
+The local temperature averager adds the existing `feed-avg` output.
+Open-Meteo past daily data remains on the legacy board.
 [The feed catalog](WEATHER_FEED_CATALOG.md) is the migration reference; its
 [CSV companion](WEATHER_FEED_CATALOG.csv) inventories the legacy source outputs.
 
@@ -664,7 +666,7 @@ and worker-task pattern as OpenWeather. Failed requests retry after 60
 seconds. The API key is never printed. A live response with air quality was
 about 1 KB on 2026-10-28.
 
-The OpenWeather, WeatherAPI, Open-Meteo, and NWS Alerts workers and the Adafruit IO
+The OpenWeather, WeatherAPI, Open-Meteo, NWS Alerts, and NWS Forecast workers and the Adafruit IO
 account rate check share a single HTTPS slot, so only one REST TLS session runs
 beside the MQTT connection at a time. A poll that finds the slot busy waits
 for a later loop without counting as an attempt. This bounds the extra heap
@@ -704,6 +706,61 @@ overnight run (2026-10-28/29) had a minimum free heap of 54,440 bytes (reached
 in the first hour, then flat), no `Heap: new low` lines, no publish timeouts,
 throttling, REST request errors, or new duplicates, and recovered
 automatically from one Wi-Fi drop.
+
+### NWS forecasts
+
+The firmware polls the NWS
+[`/points/{latitude},{longitude}` discovery endpoint](https://www.weather.gov/documentation/services-web-api)
+using the main `LATITUDE`/`LONGITUDE`, independently of the alerts test-coordinate
+overrides. Coordinates are rounded to NWS's supported four-decimal precision.
+The returned `properties.forecast` HTTPS gridpoint URL is cached in RAM,
+refreshed every 24 hours, and rediscovered after HTTP 404/410.
+Both requests send an identifying User-Agent and GeoJSON Accept header.
+No hardcoded office or gridpoint is used. The local coordinates resolved to
+`/gridpoints/MEG/54,68/forecast` during validation on 2026-11-01.
+
+The first lookup waits at least **15 minutes after Wi-Fi and NTP are ready**,
+and until the publisher and WeatherKit receive/change backlogs have drained.
+This avoids adding forecast writes to the initial startup burst. Later polls
+run **hourly**, retrieving all periods in one request, rather than the legacy
+14 repeated requests. Failed requests retry after 60 seconds and preserve
+previous values. The shared HTTPS gate, existing Let's Encrypt trust anchors,
+4-second connect/read timeouts, 5-second handshake timeout, and 8 KB worker
+stack remain in use. Responses are capped at 32 KB on the heap and parsed
+in place with a field filter; the live 14-period response was about 14 KB.
+
+Group `NWS Forecast` publishes `nws.00` through `nws.13` using the shared
+change filter and 40/minute paced MQTT queue. Each feed is an ordered
+day/night period, not an hourly forecast or a whole day. Narratives preserve
+period name, abbreviated month/day, local start/end hours, Fahrenheit
+high/low, wind direction/speed, and the full detailed forecast, for example:
+`Today Nov 1, 12pm to 6pm - high near 70F with winds: NE at 5 to 10 mph.`
+Noon/midnight are correctly formatted as `12pm`/`12am`; nonzero minutes are
+included. Offset-bearing NWS timestamps are displayed in their supplied local
+time without a fixed UTC adjustment, including across DST.
+NWS's empty wind direction for `0 mph` is accepted and displayed without a
+direction; empty directions with nonzero winds are rejected.
+
+Missing/invalid period fields or unexpected temperature units explicitly
+reject the complete snapshot. Each narrative exceeding **505 UTF-8 bytes**
+is individually shortened to at most 505 bytes, including a ` [truncated]`
+marker, without splitting a UTF-8 character. The feed and original/final byte
+counts are logged; the other periods publish normally. Truncation can omit
+meaningful details, so consult the full NWS forecast when needed.
+If fewer than 14 valid periods are supplied,
+unused positions are cleared to `No forecast available`; an empty response
+is a failure, not a successful clear. Extra periods beyond 14 are ignored.
+Queue rejection retains the whole snapshot for two-second retries.
+No `nws.when`, historical AIO reads, metadata, or `rt` writes are added.
+
+The ring is already fully assigned, so no existing pixel changes purpose.
+Use serial `NWS Forecast:` errors/success messages and
+`Sent feed group NWS Forecast - Number Updated: N` in `aggregator.log`.
+The provider health API follows the other REST providers, with a two-hour
+staleness window and red after three consecutive failures.
+Disable the old NWS forecast board before uploading to avoid overlapping
+writers. Firmware build and host tests do not establish hardware delivery;
+finish the current 40/minute baseline before uploading this migration.
 
 ### Open-Meteo current conditions
 
@@ -753,6 +810,40 @@ after three. Check serial `Open-Meteo:` messages and
 Before uploading, disable only current-feed writes on the old Open-Meteo
 board. Keep its past-day writes running: all `omp-*`, `ompast.*`, and `om-past`
 feeds and their dated historical metadata are outside this migration.
+
+### Average current temperature
+
+The ESP32 computes `feed-avg` locally from the successfully parsed Fahrenheit
+values for `om-temp`, `currenttemperature`, `openweather.owtemp`, and
+`wapi.temperature`. It does not read these feeds back from Adafruit IO or make
+additional weather requests.
+
+Each source's latest valid sample is eligible for **strictly less than 30 minutes**
+after local receipt. Successful unchanged samples renew freshness before any
+publish/change filtering; invalid/missing temperatures, failed requests, and
+publish-queue retries do not. WeatherKit uses the completed MQTT message's
+receipt time, not the time a queued message is eventually parsed. REST samples
+use the time the main loop accepts a successful response. This measures local
+receipt freshness, not the provider's observation age, and is independent of
+wall-clock timezone/DST changes. OpenWeather polls every 30 minutes, so it can
+briefly age out while its next request is in flight.
+
+The averager recalculates as sources arrive or expire, using equal weights for
+all eligible sources (one to four). Numbers use six significant digits, as in
+the Open-Meteo and WeatherAPI scalar outputs; the mean is not rounded to whole
+degrees. Changed averages use group `Feed-Avg` in the shared paced publisher.
+Unchanged averages do not generate periodic writes. Queue rejection retries
+after two seconds, recalculating from the latest eligible inputs rather than
+retaining an outdated rejected average. If all sources expire, no value is
+published and the last AIO value remains unchanged; a serial message reports
+the absence of fresh inputs.
+
+No `ele`/contributor-count metadata, extra health feed, LED/display indicator,
+or `rt` write is added. Existing provider indicators cover source health.
+The old CircuitPython source remains as a legacy reference. Disable the old
+Feed-Avg board before uploading so only the ESP32 writes `feed-avg`.
+Host tests and a firmware build do not establish live AIO delivery; verify the
+first average and a subsequent changed average on hardware after cutover.
 
 ### NWS active alerts
 
@@ -1392,6 +1483,38 @@ stability, invalid-response retention, the exact current-only URL,
 20-minute scheduling, queue retries, health transitions, HTTPS gate
 contention, worker/transport failures, oversize responses, and timer wraparound.
 Host tests do not verify hardware TLS or live MQTT delivery.
+
+[Temperature average tests](test/test_temperature_average.cpp) compile without
+network or JSON dependencies:
+
+```powershell
+& "$env:USERPROFILE\.platformio\penv\Scripts\python.exe" -m ziglang c++ -std=c++11 -Wall -Wextra -Werror -pedantic -Itest\support -Iinclude test\test_temperature_average.cpp -o .pio\host-tests\temperature_average.exe
+if ($LASTEXITCODE -eq 0) { & .\.pio\host-tests\temperature_average.exe }
+```
+
+They verify all four input keys, equal weighting, one/multiple/no fresh inputs,
+the exact 30-minute boundary, unchanged-sample freshness, invalid values,
+negative/zero/fractional averages, unchanged-output suppression, queue retries
+using the latest mean, expiry during a retry, small receipt/loop timing skew,
+and timer wraparound without reviving expired inputs. The four provider test
+suites also verify that only successfully parsed temperatures refresh the
+average, independently of unchanged-output filtering and publication retries.
+
+[NWS Forecast tests](test/test_nws_forecast.cpp) use a dedicated fake HTTPS
+client and test-only coordinates:
+
+```powershell
+& "$env:USERPROFILE\.platformio\penv\Scripts\python.exe" -m ziglang c++ -std=c++11 -Wall -Wextra -Werror -pedantic -Itest\nws_forecast_support -Itest\support -Iinclude "-I.pio\libdeps\seeed_xiao_esp32s3\ArduinoJson\src" test\test_nws_forecast.cpp -o .pio\host-tests\nws_forecast.exe
+if ($LASTEXITCODE -eq 0) { & .\.pio\host-tests\nws_forecast.exe }
+```
+
+They check coordinate discovery and URL restrictions, headers, delayed startup
+and backlog gating, hourly polling, daily rediscovery and 404/410 recovery,
+all 14 feed positions, friendly local period times, noon/midnight/DST,
+short-response clearing, invalid/oversized narratives, response bounds,
+queue retry/health, transport/worker failures, and timer wraparound.
+An optional executable argument supplies a public forecast JSON fixture
+for parsing validation; no network access is performed by the tests.
 
 [NWS Alerts tests](test/test_nws_alerts.cpp) use a dedicated fake HTTPS client
 and test-only coordinates, not local credentials or the network:

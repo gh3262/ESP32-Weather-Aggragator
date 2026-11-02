@@ -11,8 +11,10 @@
 #include "aio_publisher.h"
 #include "openweather_current.h"
 #include "nws_alerts.h"
+#include "nws_forecast.h"
 #include "weatherapi_current.h"
 #include "openmeteo_current.h"
+#include "temperature_average.h"
 #include "wifi_retry.h"
 
 #if __has_include("credentials.h")
@@ -489,9 +491,11 @@ void setup() {
   Serial.println("\nWeather aggregator: hardware and Wi-Fi bring-up");
   Serial.println("Send t for the publisher test to aggregator.diag, ? for help.");
   aio_publisher::begin();
+  temperature_average::begin();
   openweather_current::begin();
   weatherapi_current::begin();
   nws_alerts::begin();
+  nws_forecast::begin();
   openmeteo_current::begin();
   if (kEnableStatusPixels) {
     pixelsReady = status_pixels::begin();
@@ -553,6 +557,9 @@ void loop() {
                      timeSynchronized, now);
   openmeteo_current::update(networkState == NetworkState::Online,
                             timeSynchronized, now);
+  nws_forecast::update(networkState == NetworkState::Online,
+                       timeSynchronized, now);
+  temperature_average::update(now);
   runConnectivityWatchdog(now);
   updateStatusPixels(now);
   if (refreshNeeded || now - lastRefreshAt >= kRefreshMs) {

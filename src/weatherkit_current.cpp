@@ -15,6 +15,7 @@
 
 #include "aio_publisher.h"
 #include "feed_config.h"
+#include "temperature_average.h"
 #include "weather_transforms.h"
 
 namespace weatherkit_current {
@@ -375,6 +376,10 @@ void update(uint32_t now) {
       }
       std::vector<Sample> changed;
       for (Sample& sample : snapshot.samples) {
+        if (snapshot.group == Group::Current) {
+          temperature_average::observe(sample.key, sample.value.c_str(),
+                                       snapshot.receivedAt);
+        }
         const auto previous = source.acceptedValues.find(sample.key);
         if (previous == source.acceptedValues.end() || previous->second != sample.value) {
           changed.push_back(std::move(sample));
@@ -425,6 +430,12 @@ void update(uint32_t now) {
     retryPending = true;
     lastRetryAt = now;
   }
+}
+
+bool hasPendingWork() {
+  std::lock_guard<std::mutex> guard(receiveLock);
+  return assembling || !incoming.empty() || !changes.empty() ||
+         !waitingSamples.empty();
 }
 
 HealthStatus health(bool mqttConnected, uint32_t now) {

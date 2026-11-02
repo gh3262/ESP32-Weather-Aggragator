@@ -1044,6 +1044,12 @@ HealthStatus weatherHealth(uint32_t now) {
   return weatherkit_current::health(transportReady && mqttConnected.load(), now);
 }
 
+bool idle() {
+  return mqttConnected.load() && !outstandingMessageId && pending.empty() &&
+         pendingLogs.empty() && pendingDiagnostic.empty() &&
+         !weatherkit_current::hasPendingWork();
+}
+
 bool enqueueGroup(const char* groupName, const FeedSample* samples,
                   size_t sampleCount) {
   if (!configured) {

@@ -12,6 +12,7 @@ struct tm* testLocalTime(const time_t*, struct tm*);
 #undef time
 #undef localtime_r
 #include "../src/weatherkit_current.cpp"
+#include "../src/temperature_average.cpp"
 
 #include <cassert>
 #include <vector>
@@ -76,6 +77,7 @@ void tick(uint32_t now) {
 
 void reset(uint32_t now = 0, bool diagnostics = false) {
   using namespace aio_publisher;
+  temperature_average::begin();
   pending.clear();
   pendingLogs.clear();
   publishedValues.clear();
@@ -472,6 +474,14 @@ int main() {
     assert(inWindow <= 40);
   }
   assert(sent[39].at - sent[0].at == 39 * kPublishIntervalMs);
+  assert(idle());
+  weatherkit_current::assembling = true;
+  assert(!idle());
+  weatherkit_current::assembling = false;
+  weatherkit_current::waitingSamples.push_back({"test", "1"});
+  assert(!idle());
+  weatherkit_current::waitingSamples.clear();
+  assert(idle());
 
   reset();
   tick(2000);
@@ -1339,6 +1349,31 @@ int main() {
     }
   }
   assert(deliveredDiagnostic);
+  for (size_t i = 1; i < sent.size(); ++i) {
+    assert(sent[i].at - sent[i - 1].at >= kPublishIntervalMs);
+  }
+
+  reset();
+  drain();
+  temperature_average::observe("om-temp", "60", clockMs);
+  temperature_average::observe("currenttemperature", "70", clockMs);
+  temperature_average::observe("openweather.owtemp", "80", clockMs);
+  temperature_average::observe("wapi.temperature", "90", clockMs);
+  temperature_average::update(clockMs);
+  assert(pending.size() == 1 && pending.front().value == "75");
+  assert(pending.front().topic == "test-user/feeds/feed-avg");
+  const size_t beforeAverage = sent.size();
+  drain();
+  assert(sent.size() == beforeAverage + 2);
+  assert(sent[beforeAverage].topic == "test-user/feeds/feed-avg");
+  assert(sent[beforeAverage].value == "75");
+  assert(sent.back().topic == "test-user/feeds/aggregator.log");
+  assert(sent.back().value.find("Sent feed group Feed-Avg - Number Updated: 1") !=
+         std::string::npos);
+  assert(publishedValues.at("test-user/feeds/feed-avg").acknowledged);
+  temperature_average::observe("om-temp", "60", clockMs);
+  temperature_average::update(clockMs);
+  assert(pending.empty());
   for (size_t i = 1; i < sent.size(); ++i) {
     assert(sent[i].at - sent[i - 1].at >= kPublishIntervalMs);
   }

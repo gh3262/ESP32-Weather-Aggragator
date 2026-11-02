@@ -8,6 +8,7 @@ struct tm* testGmtimeR(const time_t*, struct tm*);
 #define LONGITUDE "-122.3"
 #include "../src/openweather_current.cpp"
 #undef gmtime_r
+#include "../src/temperature_average.cpp"
 
 #include <cassert>
 #include <map>
@@ -53,6 +54,7 @@ const char completeWeather[] = R"JSON({
 
 void reset() {
   using namespace openweather_current;
+  temperature_average::begin();
   workerResult = FetchResult{};
   workerRunning = false;
   resultPending = false;
@@ -115,6 +117,9 @@ int main() {
   assert(testHttpCalls == 1);
   update(true, true, 1);
   assert(submissions == 1 && accepted.size() == 22);
+  assert(temperature_average::inputs[2].fresh);
+  assert(temperature_average::inputs[2].value == 68.5);
+  assert(temperature_average::inputs[2].receivedAt == 1);
   assert(value("openweather.owmaintext") == "Clouds");
   assert(value("openweather.owdescription") == "broken clouds");
   assert(value("openweather.owweatherid") == "803");
@@ -153,12 +158,14 @@ int main() {
   acceptGroup = false;
   update(true, true, firstPoll + 1);
   assert(!pendingSamples.empty());
+  assert(temperature_average::inputs[2].receivedAt == firstPoll + 1);
   assert(health(firstPoll + kQueueDelayAmberMs) == HealthStatus::Green);
   assert(health(firstPoll + 1 + kQueueDelayAmberMs) == HealthStatus::Amber);
   assert(health(firstPoll + 1 + kStaleAfterMs) == HealthStatus::Red);
   acceptGroup = true;
   update(true, true, firstPoll + 1 + kStaleAfterMs);
   assert(pendingSamples.empty());
+  assert(temperature_average::inputs[2].receivedAt == firstPoll + 1);
   assert(health(firstPoll + 1 + kStaleAfterMs) == HealthStatus::Green);
 
   // Request failures: amber while retrying, red after three in a row.
@@ -174,6 +181,7 @@ int main() {
     testTask(nullptr);
     update(true, true, failAt + 1);
     assert(failedRequests == static_cast<uint32_t>(failure));
+    assert(temperature_average::inputs[2].receivedAt == 1);
     assert(health(failAt + 1) ==
            (failure < 3 ? HealthStatus::Amber : HealthStatus::Red));
     failAt += kRetryDelayMs + 1;
@@ -232,6 +240,8 @@ int main() {
   update(true, true, 2 * kPollIntervalMs + 1);
   assert(accepted.count("openweather.owrain") == 1);
   assert(accepted.at("openweather.owrain") == "0.00");
+  assert(temperature_average::inputs[2].value == 14.0);
+  assert(temperature_average::inputs[2].receivedAt == kPollIntervalMs + 1);
 
   const char* rainBodies[] = {
       R"JSON({"main":{"temp":1}})JSON",

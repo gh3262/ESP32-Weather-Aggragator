@@ -1,4 +1,5 @@
 #include "../src/weatherkit_current.cpp"
+#include "../src/temperature_average.cpp"
 
 #include <cassert>
 #include <map>
@@ -25,6 +26,7 @@ const char payload[] = R"JSON({
 
 void reset() {
   using namespace weatherkit_current;
+  temperature_average::begin();
   incoming.clear();
   changes.clear();
   assembly.clear();
@@ -155,6 +157,19 @@ int main() {
   assert(submitted.at("currentwindgust") == "20");
   assert(submitted.at("currentwindspeed") == "10");
   assert(submitted.at("currentuv") == "3");
+  assert(temperature_average::inputs[1].fresh);
+  assert(temperature_average::inputs[1].value == 68.0);
+  assert(temperature_average::inputs[1].receivedAt == 0);
+
+  testMillis = 100;
+  deliver(payload);
+  update(200);
+  assert(submissions == 1);
+  assert(temperature_average::inputs[1].receivedAt == 100);
+  deliver(R"({"temperature":null,"humidity":0.5})");
+  update(300);
+  assert(temperature_average::inputs[1].value == 68.0);
+  assert(temperature_average::inputs[1].receivedAt == 100);
 
   reset();
   deliver(R"({"temperature":-10,"daylight":false,"humidity":0,"windSpeed":0})");
@@ -216,9 +231,11 @@ int main() {
   deliver(payload);
   update(UINT32_MAX - 1000);
   assert(submissions == 1 && waitingSamples.size() == 20);
+  assert(temperature_average::inputs[1].value == 68.0);
   deliver(R"({"temperature":21})");
   update(998);
   assert(submissions == 1 && changes.size() == 1 && incoming.empty());
+  assert(temperature_average::inputs[1].value == 69.8);
   acceptGroup = true;
   update(999);
   assert(submissions == 2 && submitted.at("currenttemperature") == "68.0");

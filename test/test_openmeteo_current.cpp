@@ -2,6 +2,7 @@
 #define LATITUDE "47.6"
 #define LONGITUDE "-122.3"
 #include "../src/openmeteo_current.cpp"
+#include "../src/temperature_average.cpp"
 
 #include <cassert>
 #include <map>
@@ -42,6 +43,7 @@ const char completeWeather[] = R"JSON({
 
 void reset() {
   using namespace openmeteo_current;
+  temperature_average::begin();
   workerResult = FetchResult{};
   workerRunning = resultPending = configured = attempted = false;
   lastAttemptAt = nextAttemptDelay = 0;
@@ -127,6 +129,9 @@ int main() {
   update(true, false, 0);
   assert(!testTask);
   poll(0);
+  assert(temperature_average::inputs[0].fresh);
+  assert(temperature_average::inputs[0].value == 68.9);
+  assert(temperature_average::inputs[0].receivedAt == 1);
   assert(submissions == 1 && accepted.size() == 15);
   assert(value("om-when") == "2026-10-31T17:45");
   assert(value("om-winds") == "Winds: 5.8mp/h from the SE gusting 8.4");
@@ -156,11 +161,13 @@ int main() {
   const auto first = accepted;
   poll(kPollIntervalMs);
   assert(accepted == first);
+  assert(temperature_average::inputs[0].receivedAt == kPollIntervalMs + 1);
 
   acceptGroup = false;
   poll(2 * kPollIntervalMs);
   const uint32_t queuedAt = 2 * kPollIntervalMs + 1;
   assert(pendingSamples.size() == 15);
+  assert(temperature_average::inputs[0].receivedAt == queuedAt);
   assert(Serial.output.find("retaining complete snapshot") != std::string::npos);
   assert(health(queuedAt + kQueueDelayAmberMs - 1) == HealthStatus::Green);
   assert(health(queuedAt + kQueueDelayAmberMs) == HealthStatus::Amber);
@@ -170,6 +177,7 @@ int main() {
   assert(pendingSamples.size() == 15);
   update(true, true, queuedAt + kPublishRetryMs);
   assert(pendingSamples.empty() && accepted == first);
+  assert(temperature_average::inputs[0].receivedAt == queuedAt);
 
   // Wet-to-dry values are explicitly zero without restarting.
   JsonDocument dry;
@@ -244,6 +252,7 @@ int main() {
     testHttpBody = changed(field.section, field.field, field.json);
     poll(kPollIntervalMs);
     assert(failedRequests == 1 && submissions == 1 && accepted == good);
+    assert(temperature_average::inputs[0].receivedAt == 1);
     assert(health(kPollIntervalMs + 1) == HealthStatus::Amber);
     assert(Serial.output.find("Open-Meteo ERROR:") != std::string::npos);
   }

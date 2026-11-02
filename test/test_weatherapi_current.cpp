@@ -3,6 +3,7 @@
 #define LATITUDE "47.6"
 #define LONGITUDE "-122.3"
 #include "../src/weatherapi_current.cpp"
+#include "../src/temperature_average.cpp"
 
 #include <cassert>
 #include <map>
@@ -37,6 +38,7 @@ const char completeWeather[] = R"JSON({
 
 void reset() {
   using namespace weatherapi_current;
+  temperature_average::begin();
   workerResult = FetchResult{};
   workerRunning = false;
   resultPending = false;
@@ -111,6 +113,9 @@ int main() {
   assert(testHttpCalls == 1);
   update(true, true, 1);
   assert(submissions == 1 && accepted.size() == 16);
+  assert(temperature_average::inputs[3].fresh);
+  assert(temperature_average::inputs[3].value == 68.9);
+  assert(temperature_average::inputs[3].receivedAt == 1);
   assert(value("wapi.aqi") == "2");
   assert(value("wapi.cond-code") == "1000");
   assert(value("wapi.desc") == "Clear");
@@ -153,6 +158,7 @@ int main() {
   const uint32_t queuedAt = kPollIntervalMs + 1;
   update(true, true, queuedAt);
   assert(!pendingSamples.empty());
+  assert(temperature_average::inputs[3].receivedAt == queuedAt);
   assert(Serial.output.find("retaining complete snapshot") != std::string::npos);
   assert(health(queuedAt + kQueueDelayAmberMs - 1) == HealthStatus::Green);
   assert(health(queuedAt + kQueueDelayAmberMs) == HealthStatus::Amber);
@@ -162,6 +168,7 @@ int main() {
   assert(!pendingSamples.empty());
   update(true, true, queuedAt + kPublishRetryMs);
   assert(pendingSamples.empty());
+  assert(temperature_average::inputs[3].receivedAt == queuedAt);
   assert(health(queuedAt + kPublishRetryMs) == HealthStatus::Green);
 
   // Unknown codes keep the raw code and skip the description; invalid
@@ -186,6 +193,7 @@ int main() {
   assert(value("wapi.wind-chill") == "32");
   assert(value("wapi.heat-index") == "32");
   assert(value("wapi.dew-point") == "32");
+  assert(temperature_average::inputs[3].receivedAt == queuedAt);
 
   testHttpBody = R"JSON({"current":{"condition":{"code":"1000"},
     "wind_degree":360,"air_quality":{"us-epa-index":6},"precip_in":0.01,
@@ -206,6 +214,7 @@ int main() {
   for (int failure = 1; failure <= 3; ++failure) {
     poll(failAt);
     assert(failedRequests == static_cast<uint32_t>(failure));
+    assert(temperature_average::inputs[3].receivedAt == 1);
     assert(health(failAt + 1) ==
            (failure < 3 ? HealthStatus::Amber : HealthStatus::Red));
     failAt += kRetryDelayMs + 1;

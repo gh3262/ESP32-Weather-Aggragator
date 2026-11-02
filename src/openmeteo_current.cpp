@@ -1,4 +1,5 @@
 #include "openmeteo_current.h"
+#include "temperature_average.h"
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
@@ -384,6 +385,9 @@ void consumeWorkerResult(uint32_t now) {
   if (!parseResponse(result.body, samples)) {
     failRequest(now, "invalid response", result.status);
     return;
+  }
+  for (const Sample& sample : samples) {
+    temperature_average::observe(sample.key, sample.value.c_str(), now);
   }
   failedRequests = 0;
   nextAttemptDelay = kPollIntervalMs;
