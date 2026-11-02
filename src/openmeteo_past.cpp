@@ -293,7 +293,7 @@ bool parseResponse(const std::string& body, int today, std::vector<Day>& parsed)
   return true;
 }
 
-void fetchTask(void*) {
+FetchResult fetchHistory() {
   FetchResult result;
   WiFiClientSecure transport;
   transport.setCACert(letsencrypt_root_ca::kTrustedRootCa);
@@ -316,6 +316,12 @@ void fetchTask(void*) {
     }
     http.end();
   }
+  return result;
+}
+
+void fetchTask(void*) {
+  // vTaskDelete does not unwind C++ objects; finish TLS cleanup first.
+  FetchResult result = fetchHistory();
   https_gate::release();
   {
     std::lock_guard<std::mutex> guard(resultLock);

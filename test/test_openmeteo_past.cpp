@@ -69,6 +69,11 @@ std::string fixture() {
 
 void reset(bool preserveStorage = false) {
   using namespace openmeteo_past;
+  testTaskDeleteHook() = []() {
+    assert(WiFiClientSecure::liveInstances() == 0);
+    assert(HTTPClient::liveInstances() == 0);
+    assert(!https_gate::busyFlag());
+  };
   wallClock = 1793628000;
   workerResult = FetchResult{};
   workerRunning = resultPending = false;

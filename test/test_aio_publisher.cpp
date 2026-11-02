@@ -79,6 +79,11 @@ void tick(uint32_t now) {
 
 void reset(uint32_t now = 0, bool diagnostics = false) {
   using namespace aio_publisher;
+  testTaskDeleteHook() = []() {
+    assert(WiFiClientSecure::liveInstances() == 0);
+    assert(HTTPClient::liveInstances() == 0);
+    assert(!https_gate::busyFlag());
+  };
   temperature_average::begin();
   historyAcknowledgements = 0;
   historyRunning = historyResultPending = historyRetry = false;

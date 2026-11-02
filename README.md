@@ -879,6 +879,14 @@ messages; `aggregator.log` reports changed summary-group completion.
 The public past-only request was checked with example coordinates, including
 the production parser's handling of its returned dates and units. Host tests and
 the firmware build do **not** establish live AIO timestamped delivery.
+The 2026-11-02 hardware capture confirmed the first dated scalar, then exposed
+a resource leak in the two new workers: `vTaskDelete()` does not unwind C++
+locals, so their HTTP/TLS destructors were skipped. Both workers now perform
+network operations in returning helper functions, destroying those resources
+before releasing the HTTPS gate and deleting the task. Regression tests assert
+that no HTTP/TLS objects remain alive at task deletion, including failure paths.
+The cleanup fix still needs an on-board catch-up run with stable heap and
+continued successful provider/rate checks.
 Before uploading, turn off the legacy historical writer. After uploading,
 verify a scalar's value and `created_at` date, all seven summary positions,
 and a later poll reporting unchanged scalars skipped. The initial catch-up
@@ -1587,7 +1595,8 @@ rolling summary positions, DST-specific UTC noon, exact six-hour scheduling,
 equal values on different dates, unchanged/revised values across polls and
 restarts, next-day rollover, acknowledgement-only persistence, storage failures,
 queue retries, gate contention, invalid/oversized responses, worker failures,
-and timer rollover. An optional path argument supplies a public response fixture
+HTTP/TLS destruction before task deletion, and timer rollover.
+An optional path argument supplies a public response fixture
 for 2026-11-02. Publisher tests additionally exercise production HTTP queue
 dispatch, timestamp/value confirmation, retries without blocking current data,
 HTTP 429 cooldown, and unchanged MQTT pacing. These do not replace hardware

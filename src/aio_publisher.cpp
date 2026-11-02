@@ -306,7 +306,7 @@ bool validHistoryTime(const char* text) {
       atoi(text + 11) < 24 && atoi(text + 14) < 60 && atoi(text + 17) < 60;
 }
 
-void historyTask(void*) {
+HistoryResult writeHistory() {
   HistoryResult result;
   WiFiClientSecure transport;
   transport.setCACert(kRootCa);
@@ -336,6 +336,12 @@ void historyTask(void*) {
     }
     http.end();
   }
+  return result;
+}
+
+void historyTask(void*) {
+  // vTaskDelete does not unwind C++ objects; finish TLS cleanup first.
+  const HistoryResult result = writeHistory();
   https_gate::release();
   {
     std::lock_guard<std::mutex> guard(historyLock);

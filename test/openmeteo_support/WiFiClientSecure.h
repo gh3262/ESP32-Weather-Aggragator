@@ -5,6 +5,9 @@
 #include <cstring>
 
 struct WiFiClientSecure {
+  static unsigned& liveInstances() { static unsigned count = 0; return count; }
+  WiFiClientSecure() { ++liveInstances(); }
+  ~WiFiClientSecure() { --liveInstances(); }
   bool trusted = false;
   unsigned handshakeTimeout = 0;
 

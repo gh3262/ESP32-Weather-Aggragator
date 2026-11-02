@@ -12,6 +12,9 @@ extern bool testHttpReadFailure;
 extern std::string testUrl;
 
 struct HTTPClient {
+  static unsigned& liveInstances() { static unsigned count = 0; return count; }
+  HTTPClient() { ++liveInstances(); }
+  ~HTTPClient() { --liveInstances(); }
   void setConnectTimeout(int timeout) { assert(timeout == 4000); }
   void setTimeout(int timeout) { assert(timeout == 4000); }
   bool begin(WiFiClientSecure& transport, const char* url) {

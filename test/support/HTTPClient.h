@@ -8,6 +8,9 @@ extern int testHttpStatus;
 extern std::string testHttpBody;
 extern unsigned testHttpCalls;
 struct HTTPClient {
+  static unsigned& liveInstances() { static unsigned count = 0; return count; }
+  HTTPClient() { ++liveInstances(); }
+  ~HTTPClient() { --liveInstances(); }
   void setConnectTimeout(int) {}
   void setTimeout(int) {}
   bool begin(WiFiClientSecure&, const char* url) {

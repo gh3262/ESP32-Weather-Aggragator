@@ -10,5 +10,11 @@ inline int xTaskCreate(void (*task)(void*), const char*, unsigned,
   testTask = task;
   return pdPASS;
 }
-inline void vTaskDelete(void*) {}
+inline void (*&testTaskDeleteHook())() {
+  static void (*hook)() = nullptr;
+  return hook;
+}
+inline void vTaskDelete(void*) {
+  if (testTaskDeleteHook()) testTaskDeleteHook()();
+}
 #endif
