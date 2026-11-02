@@ -382,7 +382,8 @@ The ESP32 now implements only the current group at a 20-minute interval,
 using the same destinations above except `om-pres-trend`, which is deliberately
 not calculated or published. It uses verified HTTPS and the shared change-filtered
 publisher; `om-when` retains the API local timestamp without the legacy fixed
-offset adjustment. Historical destinations below remain on the old board.
+offset adjustment. Historical destinations below also have an ESP32
+implementation; see the migration note after their table.
 Disable its current-feed writes before enabling the ESP32 provider to avoid
 overlapping writers. See [current integration details](README.md#open-meteo-current-conditions).
 
@@ -423,6 +424,28 @@ gust. `precipitation_hours` is read but not included in the summary.
 The endpoint also requests daily `sunrise`, `sunset`, and
 `precipitation_probability_max` without publishing them. Its one forecast day
 does not have a dedicated daily forecast output.
+
+### 3.4 ESP32 historical migration
+
+[openmeteo_past.cpp](src/openmeteo_past.cpp) replaces the seven-day variant
+with a daily-only request every six hours, excluding today. The eight `omp-*`
+scalar feeds retain dated data, now explicitly timestamped at local noon on the
+date represented, converted to UTC with per-date DST rules. Lat/lon metadata
+is omitted. Timestamped scalars use the documented AIO HTTP data endpoint
+through the same bounded, paced publisher as current MQTT feeds; unchanged
+date/feed/value fingerprints are retained in NVS after confirmed storage.
+Revised daily values may append another point at that date's noon. Strict
+exactly-once delivery and reading existing AIO history are intentionally omitted.
+
+`ompast.0` through `.6` retain rolling date-labeled summaries and ordinary MQTT
+receipt timestamps; their unchanged values use the existing RAM change filter.
+The duplicate current summary `om-past` is retired, with no `rt` writes or
+new visual indicator. `117-OM Past Updated` above is a literal legacy status
+label, not a measured write count. The first run may replay 56 scalar points
+because the ESP32 has no persistent record of the old board's writes.
+Disable the old historical writer before uploading and verify timestamped
+delivery on hardware. See [the README](README.md#open-meteo-past-daily-conditions)
+for transport, persistence, retry, and timezone details.
 
 ## 4. OpenWeather
 

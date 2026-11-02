@@ -58,6 +58,8 @@ bool rejectPublish = false;
 bool rejectSubscription = false;
 bool rejectStop = false;
 bool rejectDestroy = false;
+unsigned historyAcknowledgements = 0;
+void historyAcknowledged() { ++historyAcknowledgements; }
 TestMqttCallback callback = nullptr;
 int fakeClient;
 
@@ -78,6 +80,9 @@ void tick(uint32_t now) {
 void reset(uint32_t now = 0, bool diagnostics = false) {
   using namespace aio_publisher;
   temperature_average::begin();
+  historyAcknowledgements = 0;
+  historyRunning = historyResultPending = historyRetry = false;
+  historyRetryAt = 0;
   pending.clear();
   pendingLogs.clear();
   publishedValues.clear();
@@ -1376,6 +1381,140 @@ int main() {
   assert(pending.empty());
   for (size_t i = 1; i < sent.size(); ++i) {
     assert(sent[i].at - sent[i - 1].at >= kPublishIntervalMs);
+  }
+
+  reset();
+  drain();
+  assert(!enqueueHistorical("omp-rain", "0", "2026-02-30T18:00:00Z", historyAcknowledged));
+  assert(!enqueueHistorical("omp-rain", "0", "2026-10-25", historyAcknowledged));
+  assert(!enqueueHistorical("omp-rain", "0", "2026-10-25T18:00:00Z", nullptr));
+  assert(enqueueHistorical("omp-rain", "0", "2026-10-25T17:00:00Z", historyAcknowledged));
+  rateAttempted = true;
+  rateAttemptAt = clockMs;
+  https_gate::release();
+  rateWorkerRunning = false;
+  testHttpBody = R"({"id":"stored","value":"0","created_at":"2026-10-25T17:00:00Z"})";
+  tick(clockMs + 2000);
+  assert(historyRunning && outstandingMessageId == 0 && testTask);
+  assert(historyPayload == R"({"value":"0","created_at":"2026-10-25T17:00:00Z"})");
+  assert(historyUrl == "https://io.adafruit.com/api/v2/test-user/feeds/omp-rain/data");
+  assert(historyAcknowledgements == 0 && https_gate::busyFlag());
+  const uint32_t firstHistoryAt = clockMs;
+  testTask(nullptr);
+  tick(clockMs + 1);
+  assert(historyAcknowledgements == 1 && pending.empty());
+  assert(!https_gate::busyFlag() && publishedValues.count("test-user/feeds/omp-rain") == 0);
+  assert(enqueueHistorical("omp-rain", "0", "2026-10-26T17:00:00Z", historyAcknowledged));
+  tick(firstHistoryAt + kPublishIntervalMs);
+  assert(!historyRunning);
+  tick(firstHistoryAt + kPublishIntervalMs + 1);
+  assert(historyRunning);
+  testHttpBody = R"({"id":"stored2","value":"0","created_at":"2026-10-26T17:00:00+00:00"})";
+  testTask(nullptr);
+  tick(clockMs + 1);
+  assert(historyAcknowledgements == 2 && pending.empty());
+
+  // Failed/mismatched responses never acknowledge, and do not block MQTT retries.
+  for (const char* body : {
+      R"({"id":"stored","value":"0","created_at":"2026-10-25T17:00:00Z"})",
+      R"({"id":"stored","value":"1","created_at":"2026-10-26T17:00:00Z"})",
+      R"({"value":"0","created_at":"2026-10-26T17:00:00Z"})",
+      R"({"id":"","value":"0","created_at":"2026-10-26T17:00:00Z"})",
+      "{}", "{bad"}) {
+    reset();
+    drain();
+    rateAttempted = true;
+    rateAttemptAt = clockMs;
+    https_gate::release();
+    rateWorkerRunning = false;
+    assert(enqueueHistorical("omp-rain", "0", "2026-10-26T17:00:00Z", historyAcknowledged));
+    tick(clockMs + 2000);
+    testHttpBody = body;
+    testTask(nullptr);
+    const uint32_t failedAt = clockMs + 1;
+    tick(failedAt);
+    assert(historyAcknowledgements == 0 && historyRetry);
+    assert(enqueueGroup("weather", samples, 2));
+    tick(failedAt + 2000);
+    tick(failedAt + 2001);
+    assert(outstandingMessageId != 0 && sent.back().topic == "test-user/feeds/weather.temp");
+    acknowledge();
+    tick(failedAt + 2002);
+    tick(failedAt + 4000);
+    tick(failedAt + 4001);
+    if (outstandingMessageId) {
+      acknowledge();
+      tick(failedAt + 4002);
+    }
+    assert(historyAcknowledgements == 0);
+  }
+
+  reset();
+  drain();
+  rateAttempted = true;
+  rateAttemptAt = clockMs;
+  https_gate::release();
+  rateWorkerRunning = false;
+  assert(enqueueHistorical("omp-rain", "0", "2026-10-26T17:00:00Z", historyAcknowledged));
+  tick(clockMs + 2000);
+  testHttpStatus = 429;
+  testTask(nullptr);
+  tick(clockMs + 1);
+  assert(throttlePaused && historyRetry && historyAcknowledgements == 0);
+  testHttpStatus = 200;
+  testHttpBody = R"({"id":"stored","value":"0","created_at":"2026-10-26T17:00:00Z"})";
+  const uint32_t cooldown = clockMs + 60000;
+  rateAttemptAt = cooldown - 1;
+  tick(cooldown - 1);
+  assert(!historyRunning);
+  tick(cooldown);
+  assert(historyRunning);
+  testTask(nullptr);
+  tick(cooldown + 1);
+  assert(historyAcknowledgements == 1 && !historyRetry);
+
+  reset();
+  drain();
+  rateAttempted = true;
+  rateAttemptAt = clockMs;
+  https_gate::release();
+  rateWorkerRunning = false;
+  assert(enqueueHistorical("omp-rain", "0", "2026-10-26T17:00:00Z", historyAcknowledged));
+  assert(https_gate::tryAcquire("other"));
+  tick(clockMs + 2000);
+  assert(!historyRunning && pending.size() == 1 && !historyRetry);
+  https_gate::release();
+  testTaskFailure = true;
+  tick(clockMs + 1);
+  assert(!historyRunning && historyRetry && !https_gate::busyFlag());
+  const uint32_t workerFailedAt = clockMs;
+  testTaskFailure = false;
+  rateAttemptAt = workerFailedAt + 59999;
+  tick(workerFailedAt + 59999);
+  assert(!historyRunning);
+  tick(workerFailedAt + 60000);
+  assert(historyRunning);
+  testHttpStatus = 201;
+  testHttpBody = R"({"id":"stored","value":"0","created_at":"2026-10-26T17:00:00.000Z"})";
+  testTask(nullptr);
+  tick(clockMs + 1);
+  assert(historyAcknowledgements == 1 && pending.empty());
+
+  for (int status : {-1, 500, 200}) {
+    reset();
+    drain();
+    rateAttempted = true;
+    rateAttemptAt = clockMs;
+    https_gate::release();
+    rateWorkerRunning = false;
+    assert(enqueueHistorical("omp-rain", "0", "2026-10-26T17:00:00Z", historyAcknowledged));
+    tick(clockMs + 2000);
+    testHttpStatus = status;
+    testHttpBody.assign(513, ' ');
+    testTask(nullptr);
+    tick(clockMs + 1);
+    assert(historyAcknowledgements == 0 && historyRetry && pending.size() == 1);
+    assert(!https_gate::busyFlag());
   }
 
   reset();

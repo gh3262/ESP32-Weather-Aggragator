@@ -87,6 +87,18 @@ struct Publish {
   bool failureLogged;
   size_t groupUpdateCount;
   bool isDiagnostic;
+  std::string createdAt;
+  HistoryAcknowledged historyAcknowledged;
+
+  Publish(std::string topic, std::string value, std::string groupName,
+          bool isGroupEnd, bool isLog, bool failureLogged,
+          size_t groupUpdateCount, bool isDiagnostic,
+          std::string createdAt = "", HistoryAcknowledged acknowledged = nullptr)
+      : topic(std::move(topic)), value(std::move(value)),
+        groupName(std::move(groupName)), isGroupEnd(isGroupEnd), isLog(isLog),
+        failureLogged(failureLogged), groupUpdateCount(groupUpdateCount),
+        isDiagnostic(isDiagnostic), createdAt(std::move(createdAt)),
+        historyAcknowledged(acknowledged) {}
 };
 
 struct PublishedValue {
@@ -260,6 +272,78 @@ RateResult fetchRate() {
   }
   result.at = millis();
   return result;
+}
+
+struct HistoryResult {
+  int status = 0;
+  bool confirmed = false;
+};
+std::mutex historyLock;
+bool historyRunning = false;
+bool historyResultPending = false;
+HistoryResult historyResult;
+std::string historyUrl;
+std::string historyPayload;
+std::string historyValue;
+std::string historyCreatedAt;
+bool historyRetry = false;
+uint32_t historyRetryAt = 0;
+
+bool validHistoryTime(const char* text) {
+  if (!text || strlen(text) != 20) return false;
+  for (size_t i = 0; i < 20; ++i) {
+    const char separator = i == 4 || i == 7 ? '-' : i == 10 ? 'T' :
+                           i == 13 || i == 16 ? ':' : i == 19 ? 'Z' : '\0';
+    if (separator ? text[i] != separator : text[i] < '0' || text[i] > '9') {
+      return false;
+    }
+  }
+  const int year = atoi(text), month = atoi(text + 5), day = atoi(text + 8);
+  const int days[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+  const bool leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+  return year >= 1970 && month >= 1 && month <= 12 && day >= 1 &&
+      day <= days[month - 1] + (month == 2 && leap ? 1 : 0) &&
+      atoi(text + 11) < 24 && atoi(text + 14) < 60 && atoi(text + 17) < 60;
+}
+
+void historyTask(void*) {
+  HistoryResult result;
+  WiFiClientSecure transport;
+  transport.setCACert(kRootCa);
+  transport.setHandshakeTimeout(5);
+  HTTPClient http;
+  http.setConnectTimeout(4000);
+  http.setTimeout(4000);
+  if (http.begin(transport, historyUrl.c_str())) {
+    http.addHeader("X-AIO-Key", AIO_KEY);
+    http.addHeader("Content-Type", "application/json");
+    result.status = http.POST(historyPayload.c_str());
+    if (result.status == 200 || result.status == 201) {
+      RateBody body;
+      const int read = http.writeToStream(&body);
+      JsonDocument document;
+      if (read >= 0 && !body.overflow &&
+          !deserializeJson(document, body.data, body.length)) {
+        const char* id = document["id"].as<const char*>();
+        const char* value = document["value"].as<const char*>();
+        const char* stamp = document["created_at"].as<const char*>();
+        // AIO can return either Z or +00:00 for the same UTC second.
+        const std::string expected = historyCreatedAt.substr(0, 19);
+        result.confirmed = id && id[0] && value && value == historyValue &&
+            stamp && (stamp == historyCreatedAt || stamp == expected + "+00:00" ||
+                      stamp == expected + ".000Z" || stamp == expected + ".000+00:00");
+      }
+    }
+    http.end();
+  }
+  https_gate::release();
+  {
+    std::lock_guard<std::mutex> guard(historyLock);
+    historyResult = result;
+    historyRunning = false;
+    historyResultPending = true;
+  }
+  vTaskDelete(nullptr);
 }
 
 void rateTask(void*) {
@@ -640,6 +724,12 @@ void completePublish() {
                   published.isDiagnostic ? kDiagnosticFeed : kLogFeed);
     return;
   }
+  if (!published.createdAt.empty()) {
+    Serial.printf("AIO history ACK: topic=%s created_at=%s\n",
+                  published.topic.c_str(), published.createdAt.c_str());
+    published.historyAcknowledged();
+    return;
+  }
   PublishedValue& previous = publishedValues.at(published.topic);
   previous.value = published.value;
   previous.acknowledged = true;
@@ -940,6 +1030,30 @@ void update(bool wifiConnected, bool timeSynchronized, uint32_t now) {
   updateRate(wifiConnected && timeSynchronized, now);
   logHeapLow(now);
 
+  {
+    std::lock_guard<std::mutex> guard(historyLock);
+    if (historyResultPending) {
+      historyResultPending = false;
+      // TLS setup delays the actual POST beyond its queue-dispatch time.
+      // Leave a full pacing interval after the response before another write.
+      lastPublishAt = now;
+      if (historyResult.confirmed) {
+        historyRetry = false;
+        completePublish();
+      } else {
+        Serial.printf("AIO history ERROR: write not confirmed (HTTP=%d); retry in 60 seconds\n",
+                      historyResult.status);
+        historyRetry = true;
+        historyRetryAt = now;
+        if (historyResult.status == 429) {
+          pausePublishing(now);
+          rateRefreshRequested = true;
+        }
+      }
+    }
+    if (historyRunning) return;
+  }
+
   const int ackId = acknowledgedMessageId.exchange(0);
   if (ackId != 0 && ackId != outstandingMessageId) {
     Serial.printf("AIO ACK unmatched: id=%d expected=%d\n", ackId, outstandingMessageId);
@@ -989,6 +1103,47 @@ void update(bool wifiConnected, bool timeSynchronized, uint32_t now) {
   }
 
   Publish& next = pending.front();
+  if (!next.createdAt.empty()) {
+    if (historyRetry && now - historyRetryAt < 60000) {
+      // Do not hold current conditions behind a failing historical write.
+      if (pending.size() > 1) {
+        Publish deferred = std::move(pending.front());
+        pending.pop_front();
+        pending.push_back(std::move(deferred));
+      }
+      return;
+    }
+    if (!timeSynchronized || !https_gate::tryAcquire("AIO history")) {
+      return;
+    }
+    JsonDocument document;
+    document["value"] = next.value;
+    document["created_at"] = next.createdAt;
+    historyPayload.clear();
+    serializeJson(document, historyPayload);
+    const size_t feedStart = next.topic.find("/feeds/") + 7;
+    historyUrl = std::string("https://io.adafruit.com/api/v2/") +
+        AIO_USERNAME + "/feeds/" + next.topic.substr(feedStart) + "/data";
+    historyValue = next.value;
+    historyCreatedAt = next.createdAt;
+    {
+      std::lock_guard<std::mutex> guard(historyLock);
+      historyRunning = true;
+    }
+    if (xTaskCreate(historyTask, "aio_history", 8192, nullptr, 1, nullptr) != pdPASS) {
+      https_gate::release();
+      std::lock_guard<std::mutex> guard(historyLock);
+      historyRunning = false;
+      historyRetry = true;
+      historyRetryAt = now;
+      Serial.println("AIO history ERROR: unable to start worker; retry in 60 seconds");
+    } else {
+      lastPublishAt = now;
+      Serial.printf("AIO history TX: topic=%s created_at=%s\n",
+                    next.topic.c_str(), next.createdAt.c_str());
+    }
+    return;
+  }
   const int messageId = esp_mqtt_client_enqueue(
       client, next.topic.c_str(), next.value.c_str(),
       static_cast<int>(next.value.size()), 1, 0, true);
@@ -1123,6 +1278,26 @@ bool enqueueGroup(const char* groupName, const FeedSample* samples,
   changed.back().groupUpdateCount = changed.size();
   publishedValues.insert(newFeeds.begin(), newFeeds.end());
   pending.insert(pending.end(), changed.begin(), changed.end());
+  trackQueueHighWater();
+  return true;
+}
+
+bool enqueueHistorical(const char* key, const char* value,
+                       const char* createdAt, HistoryAcknowledged acknowledged) {
+  const FeedSample sample{key, value};
+  if (!configured || !validSample(sample) || !validHistoryTime(createdAt) ||
+      !acknowledged) {
+    Serial.println("AIO history ERROR: invalid sample/time/callback or AIO not configured");
+    return false;
+  }
+  if (pending.size() + pendingLogs.size() + 2 > kMaxQueuedPublishes) {
+    ++rejectedGroups;
+    Serial.println("AIO history: publish queue full; deferred for retry");
+    return false;
+  }
+  const std::string topic = std::string(AIO_USERNAME) + "/feeds/" + key;
+  pending.push_back({topic, value, "", false, false, false, 0, false,
+                     createdAt, acknowledged});
   trackQueueHighWater();
   return true;
 }

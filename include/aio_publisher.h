@@ -25,6 +25,14 @@ bool idle();
 bool enqueueGroup(const char* groupName, const FeedSample* samples,
                   size_t sampleCount);
 
+// Main-loop only. Timestamped HTTP writes share the MQTT queue and pacing.
+// No value-only deduplication: separate dates must retain equal values.
+// Called on the main loop only after AIO confirms storage with the requested
+// value and UTC timestamp. The caller owns duplicate suppression/persistence.
+using HistoryAcknowledged = void (*)();
+bool enqueueHistorical(const char* key, const char* value,
+                       const char* createdAt, HistoryAcknowledged acknowledged);
+
 }
 
 #endif

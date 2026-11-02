@@ -14,6 +14,7 @@
 #include "nws_forecast.h"
 #include "weatherapi_current.h"
 #include "openmeteo_current.h"
+#include "openmeteo_past.h"
 #include "temperature_average.h"
 #include "wifi_retry.h"
 
@@ -497,6 +498,7 @@ void setup() {
   nws_alerts::begin();
   nws_forecast::begin();
   openmeteo_current::begin();
+  openmeteo_past::begin();
   if (kEnableStatusPixels) {
     pixelsReady = status_pixels::begin();
   } else {
@@ -560,6 +562,8 @@ void loop() {
   nws_forecast::update(networkState == NetworkState::Online,
                        timeSynchronized, now);
   temperature_average::update(now);
+  openmeteo_past::update(networkState == NetworkState::Online,
+                       timeSynchronized, now);
   runConnectivityWatchdog(now);
   updateStatusPixels(now);
   if (refreshNeeded || now - lastRefreshAt >= kRefreshMs) {

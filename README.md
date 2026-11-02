@@ -70,7 +70,8 @@ OpenWeather current conditions adds 21 weather outputs and the shared `rt`
 status. WeatherAPI adds 16 outputs, NWS Alerts adds four, and Open-Meteo
 current conditions adds 15. NWS forecasts adds 14 narrative outputs.
 The local temperature averager adds the existing `feed-avg` output.
-Open-Meteo past daily data remains on the legacy board.
+Open-Meteo past adds eight dated scalar time series and seven rolling daily
+summaries; the redundant legacy `om-past` output is retired.
 [The feed catalog](WEATHER_FEED_CATALOG.md) is the migration reference; its
 [CSV companion](WEATHER_FEED_CATALOG.csv) inventories the legacy source outputs.
 
@@ -97,6 +98,10 @@ ready. Feed samples are submitted in named groups; the queue publishes one
 sample at a time, waits for its QoS 1 acknowledgement, and spaces publish
 attempts by at least 1.5 seconds. This caps new application publishes at 40
 per minute, including entries sent to `aggregator.log` and `aggregator.diag`.
+Timestamped Open-Meteo historical scalars use HTTP POST instead of MQTT, but
+share this same queue, spacing, and throttle pauses. Only one historical point
+is admitted at a time by the history provider. Current feeds and logs retain
+their existing MQTT payloads and acknowledgement behavior.
 Other publishers share the account quota, so this is not a guarantee against
 account throttling. MQTT's QoS 1 retransmissions can repeat a publish while
 waiting for an acknowledgement, including on an existing connection; they are
@@ -807,9 +812,78 @@ staleness window (two polls), amber after one or two failed requests, and red
 after three. Check serial `Open-Meteo:` messages and
 `Sent feed group Open-Meteo current - Number Updated: N` in `aggregator.log`.
 
-Before uploading, disable only current-feed writes on the old Open-Meteo
-board. Keep its past-day writes running: all `omp-*`, `ompast.*`, and `om-past`
-feeds and their dated historical metadata are outside this migration.
+The current-only cutover originally left past-day writes on the legacy board.
+The historical implementation below now replaces those too. Disable the
+legacy past writer before uploading the combined firmware.
+
+### Open-Meteo past daily conditions
+
+[openmeteo_past.cpp](src/openmeteo_past.cpp) makes a separate verified HTTPS
+request for the **seven completed local calendar days** every **six hours**.
+The first request waits for the current publisher backlog to drain. It requests
+`past_days=7`, `forecast_days=0`, only the required daily fields, Fahrenheit,
+mph, inch precipitation, and the configured IANA `TIMEZONE`. It shares the HTTPS
+gate with current providers, the AIO rate check, and historical writes.
+Requests use 4-second connect/read and 5-second TLS handshake timeouts, an 8 KB
+response limit, a 12 KB worker stack, and 60-second retries after failure.
+Missing/invalid daily fields, units, dates, timezone, weather codes, or overlong
+summaries explicitly reject the snapshot instead of inventing data.
+This remains Open-Meteo's recent model-derived daily data, not a station archive.
+
+The eight history feeds are `omp-totprec`, `omp-rain`, `omp-showers`,
+`omp-snow`, `omp-maxtemp`, `omp-mintemp`, `omp-daylighthours`, and
+`omp-sunshinehrs`. Each point receives a `created_at` of **noon on the date
+represented by the data**, converted from the configured local timezone to an
+explicit UTC ISO timestamp. `TZ_STRING` must describe the same weather-location
+timezone as `TIMEZONE`; the existing Central configuration meets this requirement.
+The POSIX rule resolves DST separately for each date, rather than applying the
+API response's single current UTC offset to every past day. For example, local
+noon is `17:00Z` on 2026-10-31 and `18:00Z` on 2026-11-01 in US Central time.
+Daylight/sunshine seconds become hours truncated to one decimal, matching the
+legacy feed values. Other numbers use six significant digits.
+
+AIO's [HTTP API](https://io.adafruit.com/api/docs/http.html) explicitly accepts
+`created_at`; its [MQTT API](https://io.adafruit.com/api/docs/mqtt.html) does not
+document custom timestamps. Therefore these scalar writes use authenticated,
+certificate-verified HTTP POSTs through the shared publisher, **not an independent
+burst loop**. MQTT and HTTP starts are spaced by at least 1.5 seconds, and all
+new writes pause on account throttling. A successful HTTP 200/201 must return a
+nonempty data ID and the requested value and UTC timestamp before the provider
+is notified. Unconfirmed writes retry after 60 seconds; current MQTT data can
+pass a historical point waiting for its retry. HTTP 429 also starts the shared
+60-second throttle pause.
+
+Duplicate suppression uses eight small rotating NVS records in namespace
+`omp-history`, storing 64-bit fingerprints for each date's eight confirmed
+scalar values. Fingerprints include location, timezone, timestamp, feed, and
+formatted value. Equal values on different dates are **not** suppressed:
+consecutive dry days each get their own zero. Unchanged daily values are skipped
+across polls and normal restarts. A revised scalar is appended at the same
+historical timestamp; other unchanged scalars are skipped. There are no AIO
+history reads or deletions, and no attempt at strict exactly-once delivery.
+A lost response, power loss between confirmation and NVS save, cleared NVS,
+or the first migration can create duplicates. Existing legacy history is not
+imported into the local cache, so the first run can replay all 56 scalar points.
+NVS failures are logged and pause further history admission until storage
+recovers, without blocking current providers.
+
+The seven rolling summaries remain `ompast.0` (yesterday) through `ompast.6`
+(seven days ago). They retain their date in the narrative and ordinary
+receipt-time MQTT timestamps, as in the old script. They are submitted as one
+small change-filtered group after the scalars are confirmed, with no flash-backed
+summary deduplication: a reboot may repeat seven summaries. No `om-past`, `rt`,
+lat/lon/elevation metadata, extra status feed, or visual indicator is added.
+
+Check serial `Open-Meteo past:` batch/error messages and `AIO history TX/ACK:`
+messages; `aggregator.log` reports changed summary-group completion.
+The public past-only request was checked with example coordinates, including
+the production parser's handling of its returned dates and units. Host tests and
+the firmware build do **not** establish live AIO timestamped delivery.
+Before uploading, turn off the legacy historical writer. After uploading,
+verify a scalar's value and `created_at` date, all seven summary positions,
+and a later poll reporting unchanged scalars skipped. The initial catch-up
+shares the account quota and can take several minutes; no historical writes
+have been made to the account during development.
 
 ### Average current temperature
 
@@ -1499,6 +1573,25 @@ using the latest mean, expiry during a retry, small receipt/loop timing skew,
 and timer wraparound without reviving expired inputs. The four provider test
 suites also verify that only successfully parsed temperatures refresh the
 average, independently of unchanged-output filtering and publication retries.
+
+[Open-Meteo past tests](test/test_openmeteo_past.cpp) use fake HTTPS, a fixed
+clock with US Central DST-boundary fixtures, and fake persistent storage:
+
+```powershell
+& "$env:USERPROFILE\.platformio\penv\Scripts\python.exe" -m ziglang c++ -std=c++11 -Wall -Wextra -Werror -pedantic -Itest\openmeteo_past_support -Itest\openmeteo_support -Itest\support -Iinclude "-I.pio\libdeps\seeed_xiao_esp32s3\ArduinoJson\src" test\test_openmeteo_past.cpp -o .pio\host-tests\openmeteo_past.exe
+if ($LASTEXITCODE -eq 0) { & .\.pio\host-tests\openmeteo_past.exe }
+```
+
+They verify the past-only URL, seven completed dates, all eight scalar mappings,
+rolling summary positions, DST-specific UTC noon, exact six-hour scheduling,
+equal values on different dates, unchanged/revised values across polls and
+restarts, next-day rollover, acknowledgement-only persistence, storage failures,
+queue retries, gate contention, invalid/oversized responses, worker failures,
+and timer rollover. An optional path argument supplies a public response fixture
+for 2026-11-02. Publisher tests additionally exercise production HTTP queue
+dispatch, timestamp/value confirmation, retries without blocking current data,
+HTTP 429 cooldown, and unchanged MQTT pacing. These do not replace hardware
+delivery, real flash persistence, and account-level timestamp verification.
 
 [NWS Forecast tests](test/test_nws_forecast.cpp) use a dedicated fake HTTPS
 client and test-only coordinates:
